@@ -480,6 +480,7 @@ const GameHeader = ({
                     onClick={() => setAudioState({...audioState, isMuted: !audioState.isMuted})}
                     className={`text-xl transition-colors ${audioState.isMuted ? 'text-stone-600' : 'text-stone-300 hover:text-white'}`}
                     title={audioState.isMuted ? "Ativar Som" : "Silenciar"}
+                    aria-label={audioState.isMuted ? "Ativar som" : "Silenciar"}
                 >
                     {audioState.isMuted ? "🔇" : "🔊"}
                 </button>
@@ -488,6 +489,7 @@ const GameHeader = ({
                     onClick={() => setAudioState({...audioState, isNarrationEnabled: !audioState.isNarrationEnabled})}
                     className={`text-xl transition-colors relative ${audioState.isNarrationEnabled ? 'text-stone-300 hover:text-white' : 'text-stone-600'}`}
                     title="Narração"
+                    aria-label={audioState.isNarrationEnabled ? "Desativar narração" : "Ativar narração"}
                 >
                     {audioState.isNarrationEnabled ? "🗣️" : "😶"}
                     {audioState.isNarrating && (
@@ -503,6 +505,7 @@ const GameHeader = ({
                         onClick={() => setAudioState({...audioState, showSettings: !audioState.showSettings})}
                         className={`text-xl transition-colors ${audioState.showSettings ? 'text-white' : 'text-stone-500 hover:text-stone-300'}`}
                         title="Configurações"
+                        aria-label="Configurações de áudio"
                     >
                         ⚙️
                     </button>
@@ -1253,6 +1256,7 @@ const App = () => {
                       onClick={() => setIsLogOpen(!isLogOpen)}
                       className="w-10 h-10 flex items-center justify-center bg-stone-900 hover:bg-stone-800 border border-stone-700 rounded text-stone-400 transition-colors shrink-0"
                       title="Ver Histórico de Rolagens"
+                      aria-label="Ver histórico de rolagens"
                     >
                       <span className="text-xl">📜</span>
                     </button>
@@ -1260,6 +1264,7 @@ const App = () => {
                       onClick={handleSaveGame}
                       className="w-10 h-10 flex items-center justify-center bg-stone-900 hover:bg-stone-800 border border-stone-700 rounded text-stone-400 transition-colors shrink-0"
                       title="Salvar Jogo"
+                      aria-label="Salvar jogo"
                       disabled={isLoading}
                     >
                       <span className="text-xl">💾</span>
@@ -1273,6 +1278,7 @@ const App = () => {
                           onClick={() => handleDiceRoll(`d${d}`, Math.floor(Math.random() * d) + 1)}
                           className="w-10 h-10 flex flex-col items-center justify-center bg-[#1e1c19] hover:bg-red-900 border border-stone-700 hover:border-red-600 rounded text-stone-300 transition-all shrink-0 group relative overflow-hidden"
                           title={diceDescriptions[d]}
+                          aria-label={diceDescriptions[d]}
                         >
                           <span className="text-[10px] font-bold opacity-50 absolute top-0.5">d{d}</span>
                           <span className="text-lg font-fantasy group-hover:scale-110 transition-transform">🎲</span>
@@ -1294,15 +1300,21 @@ const App = () => {
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   placeholder="O que você deseja fazer?"
+                  aria-label="Sua ação"
                   disabled={isLoading}
                   className="flex-1 bg-[#1a1816] text-[#dcd0c0] border border-stone-700 rounded-lg px-4 py-3 focus:outline-none focus:border-yellow-700 focus:ring-1 focus:ring-yellow-700 transition-all placeholder-stone-600 font-serif text-lg"
                 />
                 <button
                   type="submit"
                   disabled={isLoading || !inputValue.trim()}
-                  className="bg-red-900 hover:bg-red-800 text-stone-200 font-bold px-8 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-fantasy tracking-widest border border-red-950 shadow-lg text-lg"
+                  className="bg-red-900 hover:bg-red-800 text-stone-200 font-bold px-8 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-fantasy tracking-widest border border-red-950 shadow-lg text-lg flex items-center justify-center min-w-[120px]"
                 >
-                  {isLoading ? "..." : "AGIR"}
+                  {isLoading ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 border-2 border-stone-200 border-t-transparent rounded-full animate-spin"></div>
+                      <span className="text-sm">AGINDO...</span>
+                    </div>
+                  ) : "AGIR"}
                 </button>
             </form>
          </div>
