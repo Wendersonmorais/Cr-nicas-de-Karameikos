@@ -53,6 +53,7 @@ interface RollEntry {
 const MODEL_NAME = "gemini-2.5-flash";
 const IMAGE_MODEL_NAME = "gemini-2.5-flash-image";
 const TTS_MODEL_NAME = "gemini-2.5-flash-preview-tts";
+const MAX_INPUT_LENGTH = 2000;
 
 const SOUND_LIBRARY: Record<string, string> = {
   MUSICA: "https://actions.google.com/sounds/v1/horror/horror_ambience.ogg",
@@ -697,6 +698,7 @@ const ChatMessage: React.FC<{ msg: Message; onOptionSelect?: (value: string) => 
                 <ReactMarkdown
                     components={{
                         p: ({node, ...props}) => <p className="mb-4 last:mb-0" {...props} />,
+                        a: ({node, ...props}) => <a target="_blank" rel="noopener noreferrer" className="text-yellow-600 hover:text-yellow-500 underline" {...props} />,
                         ul: ({node, ...props}) => <ul className="list-disc pl-5 mb-4 space-y-1 text-stone-400" {...props} />,
                         ol: ({node, ...props}) => <ol className="list-decimal pl-5 mb-4 space-y-1 text-stone-400" {...props} />,
                         li: ({node, ...props}) => <li className="pl-1" {...props} />,
@@ -1087,6 +1089,7 @@ const App = () => {
 
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || isLoading || !aiRef.current) return;
+    if (text.length > MAX_INPUT_LENGTH) return;
 
     if (!audioContextRef.current) {
          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
@@ -1287,16 +1290,24 @@ const App = () => {
                   e.preventDefault();
                   handleSendMessage(inputValue);
                 }}
-                className="flex gap-4 w-full"
+                className="flex gap-4 w-full relative"
             >
-                <input
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  placeholder="O que você deseja fazer?"
-                  disabled={isLoading}
-                  className="flex-1 bg-[#1a1816] text-[#dcd0c0] border border-stone-700 rounded-lg px-4 py-3 focus:outline-none focus:border-yellow-700 focus:ring-1 focus:ring-yellow-700 transition-all placeholder-stone-600 font-serif text-lg"
-                />
+                <div className="flex-1 relative">
+                    <input
+                      type="text"
+                      value={inputValue}
+                      maxLength={MAX_INPUT_LENGTH}
+                      onChange={(e) => setInputValue(e.target.value)}
+                      placeholder="O que você deseja fazer?"
+                      disabled={isLoading}
+                      className="w-full bg-[#1a1816] text-[#dcd0c0] border border-stone-700 rounded-lg pl-4 pr-16 py-3 focus:outline-none focus:border-yellow-700 focus:ring-1 focus:ring-yellow-700 transition-all placeholder-stone-600 font-serif text-lg"
+                    />
+                    {inputValue.length > MAX_INPUT_LENGTH * 0.8 && (
+                      <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono ${inputValue.length >= MAX_INPUT_LENGTH ? 'text-red-500' : 'text-yellow-600'}`}>
+                        {inputValue.length}/{MAX_INPUT_LENGTH}
+                      </span>
+                    )}
+                </div>
                 <button
                   type="submit"
                   disabled={isLoading || !inputValue.trim()}
