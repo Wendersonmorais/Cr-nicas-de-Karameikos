@@ -15,6 +15,7 @@ interface FormField {
   type: "text" | "select" | "radio" | "checkbox";
   label: string;
   placeholder?: string;
+  defaultValue?: string; // Added to support pre-selection
   options?: string[];
   max_select?: number; // For checkboxes
 }
@@ -32,6 +33,7 @@ interface RollRequest {
 
 interface InterfaceData {
   modo: "rolagem" | "botoes" | "formulario" | "texto_livre";
+  permitir_input_livre?: boolean; // Controls if text input is shown alongside buttons
   pedir_rolagem?: RollRequest;
   conteudo?: Option[] | FormSchema; // Can be buttons or a form schema
 }
@@ -45,6 +47,7 @@ interface JsonData {
     local: string;
     missao?: string;
     inventario?: string[];
+    atributos?: Record<string, string>; // Added attributes
   };
   update_avatar?: {
     trigger: boolean;
@@ -76,11 +79,37 @@ interface GameStatus {
   missao: string;
   avatarUrl?: string;
   inventario?: string[];
+  atributos?: Record<string, string>; // Added attributes
 }
 
 // --- Constants & Config ---
 const MODEL_NAME = "gemini-2.5-flash";
 const IMAGE_MODEL_NAME = "gemini-2.5-flash-image";
+const TTS_MODEL_NAME = "gemini-2.5-flash-preview-tts";
+
+// --- Tactical Guides for Attributes ---
+const CLASS_STATS_GUIDE: Record<string, { primary: string[], optimal: Record<string, string> }> = {
+    "guerreiro": {
+        primary: ["for", "con"],
+        optimal: { for: "15", con: "14", des: "13", sab: "12", car: "10", int: "8" }
+    },
+    "ladino": {
+        primary: ["des", "int"],
+        optimal: { des: "15", int: "14", con: "13", car: "12", sab: "10", for: "8" }
+    },
+    "mago": {
+        primary: ["int", "con"],
+        optimal: { int: "15", con: "14", des: "13", sab: "12", car: "10", for: "8" }
+    },
+    "clérigo": {
+        primary: ["sab", "con"],
+        optimal: { sab: "15", con: "14", for: "13", car: "12", int: "10", des: "8" }
+    },
+     "patrulheiro": {
+        primary: ["des", "sab"],
+        optimal: { des: "15", sab: "14", con: "13", for: "12", int: "10", car: "8" }
+    }
+};
 
 const SYSTEM_INSTRUCTION = `
 **PERSONA:**
@@ -107,7 +136,8 @@ Este JSON é a ÚNICA fonte da verdade para a interface do jogo.
       "hp_max": Number, 
       "local": "Nome do Local",
       "missao": "Objetivo atual",
-      "inventario": ["Item 1", "Item 2"]
+      "inventario": ["Item 1", "Item 2"],
+      "atributos": { "Força": "15 (+2)", "Destreza": "12 (+1)", ... } // Opcional, envie APENAS quando houver atualização relevante (ex: criação de ficha)
   },
   "update_avatar": {
       "trigger": Boolean,  // True se o visual do personagem mudou ou foi criado
@@ -116,6 +146,7 @@ Este JSON é a ÚNICA fonte da verdade para a interface do jogo.
   },
   "interface": {
       "modo": "String ('rolagem' | 'botoes' | 'formulario' | 'texto_livre')",
+      "permitir_input_livre": Boolean, // SE TRUE, exibe campo de texto abaixo dos botões
       "pedir_rolagem": { // PREENCHER SE MODO == 'rolagem'
           "dado": "d20",
           "motivo": "Teste de Furtividade",
@@ -126,29 +157,64 @@ Este JSON é a ÚNICA fonte da verdade para a interface do jogo.
 }
 \`\`\`
 
-**REGRAS DE INTERFACE E DADOS (CRÍTICO):**
-1. **AVATAR DINÂMICO:**
-   - O campo \`nome\` começa como "Desconhecido".
-   - SE o jogador se apresentar ou o narrador descobrir o nome, ATUALIZE \`status_jogador.nome\` imediatamente no JSON.
-   - Para gerar o avatar, use o campo \`update_avatar\` no JSON.
-2. **SISTEMA DE ROLAGEM (STOP & WAIT):**
-   - Você **NÃO** rola dados para testes do jogador. Você **SOLICITA** rolagens.
-   - Quando uma ação for incerta (ataque, perícia):
-     1. Narre a tensão e preparação.
-     2. Defina \`interface.modo = "rolagem"\`.
-     3. Preencha \`interface.pedir_rolagem\` com o dado necessário.
-     4. PARE a resposta. Aguarde o input do sistema (o jogador clicará no dado e enviará o resultado).
-   - **RETORNO DO SISTEMA:** Quando o jogador rolar, você receberá uma mensagem EXATA: \`[SISTEMA: O Jogador rolou d20 e obteve: 15]\`. Use isso para narrar a consequência.
-3. **CRIAÇÃO DE PERSONAGEM (FORMULÁRIO):**
-   - Ao escolher arquétipo, use \`interface.modo = "formulario"\`.
-   - Coloque o schema do formulário em \`interface.conteudo\`.
-   - **Schema Obrigatório do Formulário:**
-     - **Nome**: Texto (Se o jogador digitar "Gerar com IA", você deve inventar um nome adequado).
-     - **Raça**: Dropdown com as principais raças de Mystara (Humano Traladarano, Humano Thyatiano, Elfo, Anão, Halfling).
-     - **Classe**: Dropdown com as classes básicas (Guerreiro, Ladino, Mago, Clérigo, Patrulheiro, Paladino).
-     - **Atributos**: Dropdown com ["Arranjo Padrão (15, 14, 13, 12, 10, 8)", "Compra de Pontos (27 pts)", "Rolagem (4d6 drop lowest)"].
-     - **Talento**: Dropdown com ["Sangue Traladarano (Vantagem vs Veneno)", "Disciplina Thyatiana (+1 Iniciativa)", "Erudito de Glantri (Arcanismo)", "Rato de Specularum (Furtividade Urbano)"].
-     - **Equipamento**: Radio com ["Pacote de Aventureiro", "Pacote de Explorador", "Pacote de Diplomata"].
+**PROTOCOLO DE AGÊNCIA DO JOGADOR (INPUT LIVRE):**
+1. **Improvisação:** Em RPGs de mesa, a liberdade é total. Nunca limite o jogador apenas às opções pré-calculadas.
+2. **Instrução de Interface:** Sempre que você oferecer escolhas (botões), você DEVE sinalizar para a interface que a **Caixa de Texto Livre** também deve estar ativa.
+3. **No JSON:** Defina a propriedade \`"permitir_input_livre": true\` dentro do objeto de interface. Isso fará o aplicativo exibir o campo de digitação abaixo dos botões.
+
+**REGRAS DE INTERFACE E CRIAÇÃO DE PERSONAGEM (PASSO A PASSO):**
+
+**PASSO 1: DADOS INICIAIS**
+- Ao iniciar, envie \`interface.modo = "formulario"\` com o schema.
+- **IMPORTANTE:** Se o jogador escolheu um arquétipo (Legionário, Raposa, Erudito), adicione \`"defaultValue": "Nome da Classe"\` no campo "classe" para vir pré-selecionado.
+   - Legionário -> "Guerreiro (Thyatiano)"
+   - Raposa -> "Ladino (Traladarano)"
+   - Erudito -> "Mago (Glantri)"
+
+   **SCHEMA BASE:**
+   \`\`\`json
+   {
+      "titulo": "Registro de Aventureiro",
+      "fields": [
+          { "id": "nome", "type": "text", "label": "Nome do Personagem", "placeholder": "Ex: Voron" },
+          { "id": "classe", "type": "select", "label": "Classe Escolhida", "defaultValue": null, "options": ["Guerreiro (Thyatiano)", "Ladino (Traladarano)", "Mago (Glantri)", "Clérigo (Karameikos)"] },
+          { "id": "atributos", "type": "select", "label": "Método de Atributos", "options": ["Arranjo Padrão (15, 14, 13, 12, 10, 8)", "Rolagem de Dados (4d6 drop lowest)", "Compra de Pontos (27 pts)"] },
+          { "id": "equipamento", "type": "radio", "label": "Kit Inicial", "options": ["Kit Aventureiro (Mochila/Corda)", "Kit Explorador (Rações/Tochas)"] }
+      ]
+   }
+   \`\`\`
+
+**PASSO 2: DISTRIBUIÇÃO DE ATRIBUTOS (PÓS-SUBMISSÃO)**
+Assim que o jogador enviar o formulário acima:
+1. **Analise o método escolhido.**
+   - Se for **Rolagem**: ROLE os dados explicitamente no texto (ex: "Rolei 6 vezes: 16, 14, 12...").
+   - Se for **Compra**: Relembre os custos (8=0, 15=9).
+2. **Envie IMEDIATAMENTE um SEGUNDO formulário** para alocação.
+   - Os placeholders dos campos serão preenchidos automaticamente pela interface, mas envie o schema abaixo.
+
+   **SCHEMA ALOCAÇÃO:**
+   \`\`\`json
+   {
+      "titulo": "Alocação de Atributos",
+      "fields": [
+        { "id": "for", "type": "text", "label": "Força", "placeholder": "..." },
+        { "id": "des", "type": "text", "label": "Destreza", "placeholder": "..." },
+        { "id": "con", "type": "text", "label": "Constituição", "placeholder": "..." },
+        { "id": "int", "type": "text", "label": "Inteligência", "placeholder": "..." },
+        { "id": "sab", "type": "text", "label": "Sabedoria", "placeholder": "..." },
+        { "id": "car", "type": "text", "label": "Carisma", "placeholder": "..." }
+      ]
+   }
+   \`\`\`
+
+3. **FINALIZAÇÃO DE PERSONAGEM:**
+   - Após o jogador submeter os atributos, calcule os modificadores (ex: 15 = +2).
+   - Preencha o campo \`atributos\` no JSON \`status_jogador\`.
+   - **GERE UMA IMAGEM** do personagem usando o gatilho \`--- [CENA VISUAL SUGERIDA] ---\`.
+
+3. **OPÇÕES DE AÇÃO (BOTOES):**
+   - Em momentos de decisão ou combate, use \`interface.modo = "botoes"\` e \`"permitir_input_livre": true\`.
+   - Forneça 3 a 4 opções táticas e claras no array \`interface.conteudo\`.
 
 **SISTEMA DE SAVE/LOAD:**
 Se solicitado "Save", gere um bloco de texto visível com \`[CHECKPOINT_KARAMEIKOS]\`.
@@ -161,7 +227,7 @@ const INITIAL_BUTTONS: Option[] = [
   { label: "Legionário Thyatiano", sub: "Guerreiro Humano", value: "Eu sou um Legionário Thyatiano (Guerreiro Humano). Apresente o FORMULÁRIO para eu preencher minha ficha agora." },
   { label: "\"Raposa\" Traladarana", sub: "Ladino Humano", value: "Eu sou uma 'Raposa' Traladarana (Ladino Humano). Apresente o FORMULÁRIO para eu preencher minha ficha agora." },
   { label: "Erudito de Glantri", sub: "Mago Elfo", value: "Eu sou um Erudito de Glantri (Mago Elfo). Apresente o FORMULÁRIO para eu preencher minha ficha agora." },
-  { label: "✨ Criar meu próprio", sub: "Personalizado", value: "Gostaria de criar meu próprio personagem. Apresente o FORMULÁRIO completo para eu preencher os detalhes agora." },
+  { label: "✨ Criar meu próprio", sub: "Personalizado", value: "Gostaria de criar meu próprio personagem. (SISTEMA: Responda IMEDIATAMENTE com interface.modo='formulario' usando o SCHEMA OBRIGATÓRIO de criação de ficha)." },
 ];
 
 const INITIAL_MESSAGE: Message = {
@@ -171,7 +237,7 @@ const INITIAL_MESSAGE: Message = {
     options: INITIAL_BUTTONS,
     jsonData: {
         status_jogador: { nome: "Desconhecido", titulo: "Aventureiro", hp_atual: 10, hp_max: 10, local: "Estrada de Threshold", missao: "Sobreviver", inventario: [] },
-        interface: { modo: "botoes", conteudo: INITIAL_BUTTONS }
+        interface: { modo: "botoes", permitir_input_livre: true, conteudo: INITIAL_BUTTONS }
     }
 }
 
@@ -196,68 +262,95 @@ const DividerDecoration = () => (
   </div>
 );
 
-const getFieldIcon = (label: string) => {
-    const l = label.toLowerCase();
-    if (l.includes("nome")) return (
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-yellow-600">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/>
-        </svg>
-    );
-    if (l.includes("raça") || l.includes("origem")) return (
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-yellow-600">
-             <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/>
-        </svg>
-    );
-    if (l.includes("classe") || l.includes("profissão")) return (
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-yellow-600">
-             <path d="M14.5 17.5L17 20l-2.5 2.5L12 20l2.5-2.5zm-5 0L7 20l2.5 2.5L12 20l-2.5-2.5zm5.9-6.1l2.8-2.8c.4-.4.4-1 0-1.4l-2.8-2.8c-.4-.4-1-.4-1.4 0l-2.8 2.8 4.2 4.2zm-7 0l-2.8-2.8c-.4-.4-.4-1 0-1.4l2.8-2.8c.4-.4 1-.4 1.4 0l2.8 2.8-4.2 4.2zM12 2l2.1 2.1c.4.4.4 1 0 1.4L12 7.6 9.9 5.5c-.4-.4-.4-1 0-1.4L12 2z"/>
-        </svg>
-    );
-    if (l.includes("atributo") || l.includes("habilidade")) return (
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-yellow-600">
-             <path d="M19.07 4.93L17.66 3.52C17.27 3.13 16.63 3.13 16.24 3.52L12 7.76 7.76 3.52C7.37 3.13 6.73 3.13 6.34 3.52L4.93 4.93C4.54 5.32 4.54 5.96 4.93 6.35L9.17 10.59 4.93 14.83C4.54 15.22 4.54 15.86 4.93 16.25L6.34 17.66C6.73 18.05 7.37 18.05 7.76 17.66L12 13.41 16.24 17.66C16.63 18.05 17.27 18.05 17.66 17.66L19.07 16.25C19.46 15.86 19.46 15.22 19.07 14.83L14.83 10.59 19.07 6.35C19.46 5.96 19.46 5.32 19.07 4.93Z" />
-        </svg>
-    );
-    return (
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-yellow-600">
-            <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
-        </svg>
-    );
+// --- Audio Utils ---
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
 }
 
-// --- Dynamic Form Component (Restored & Fixed) ---
+// --- Fallback Schema (Security) ---
+const DEFAULT_CHAR_SHEET: FormSchema = {
+    titulo: "Registro de Aventureiro",
+    fields: [
+        { 
+            id: "nome", 
+            type: "text", 
+            label: "Nome do Herói", 
+            placeholder: "Ex: Voron, o Astuto" 
+        },
+        { 
+            id: "classe", 
+            type: "select", 
+            label: "Vocação (Classe)", 
+            options: ["Guerreiro (Soldado)", "Ladino (Criminoso)", "Mago (Erudito)", "Clérigo (Acólito)", "Patrulheiro (Caçador)"] 
+        },
+        { 
+            id: "atributos", 
+            type: "select", 
+            label: "Método de Atributos", 
+            options: ["Arranjo Padrão (15, 14, 13, 12, 10, 8)", "Rolagem de Dados (4d6 drop lowest)", "Compra de Pontos (27 pts)"] 
+        },
+        { 
+            id: "origem", 
+            type: "radio", 
+            label: "Origem Regional", 
+            options: ["Nativo de Karameikos", "Invasor Thyatiano", "Elfo de Alfheim", "Anão de Rockhome"] 
+        }
+    ]
+};
+
+// --- Dynamic Form Component (Hardened) ---
 
 const DynamicForm = ({ 
     schema, 
-    onSubmit 
+    onSubmit,
+    context 
 }: { 
     schema: any, 
-    onSubmit: (values: Record<string, string | string[]>) => void 
+    onSubmit: (values: Record<string, string | string[]>) => void,
+    context?: { userClass?: string, method?: string }
 }) => {
     const [formData, setFormData] = useState<Record<string, any>>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
 
-    // Safety checks for schema rendering
-    const safeSchema = schema || {};
-    const safeFields: FormField[] = Array.isArray(safeSchema) 
-        ? safeSchema 
-        : (Array.isArray(safeSchema.fields) ? safeSchema.fields : []);
+    // LÓGICA DE SEGURANÇA (FALLBACK)
+    // 1. Pega o schema da IA ou usa vazio
+    let activeSchema = schema || {};
+    
+    // 2. Verifica se a IA mandou campos genéricos ("Campo 1", "Field 1") ou lista vazia
+    const fields = Array.isArray(activeSchema.fields) ? activeSchema.fields : [];
+    const hasGenericFields = fields.some((f: any) => f.label?.toLowerCase().includes("campo") || f.label?.toLowerCase().includes("field"));
+    const isEmpty = fields.length === 0;
 
-    const safeTitle = safeSchema.titulo || "Ficha de Personagem";
-
-    if (safeFields.length === 0) {
-        return (
-            <div className="p-4 bg-red-900/20 border border-red-800 rounded text-red-400 text-xs font-mono text-center">
-                [ERRO ARCANO] O pergaminho está em branco (JSON Inválido).
-                <button 
-                    onClick={() => onSubmit({ erro: "O formulário veio vazio. Mestre, gere novamente por favor." })}
-                    className="block mx-auto mt-2 text-stone-300 underline hover:text-white cursor-pointer"
-                >
-                    Pedir ao Mestre novamente
-                </button>
-            </div>
-        );
+    // 3. Se estiver quebrado, ATIVA O PLANO B (Ficha Padrão)
+    if (isEmpty || hasGenericFields) {
+        activeSchema = DEFAULT_CHAR_SHEET;
     }
+    
+    // Garante que usamos os campos finais decididos acima
+    const safeFields = activeSchema.fields;
+
+    // DETECTA SE É FORM DE ALOCAÇÃO DE ATRIBUTOS
+    const isAttributeAllocation = activeSchema.titulo?.toLowerCase().includes("alocação") || 
+                                  activeSchema.titulo?.toLowerCase().includes("atributos");
+
+    // Initialize Default Values if provided by Schema
+    useEffect(() => {
+        const defaults: Record<string, any> = {};
+        safeFields.forEach((field: any) => {
+            if (field.defaultValue) {
+                defaults[field.id] = field.defaultValue;
+            }
+        });
+        if (Object.keys(defaults).length > 0) {
+            setFormData(prev => ({ ...defaults, ...prev }));
+        }
+    }, [activeSchema]);
 
     const handleInputChange = (id: string, value: string) => {
         setFormData(prev => ({ ...prev, [id]: value }));
@@ -269,156 +362,661 @@ const DynamicForm = ({
             if (current.includes(option)) {
                 return { ...prev, [id]: current.filter((item: string) => item !== option) };
             } else {
-                if (max && current.length >= max) return prev; 
+                if (max && current.length >= max) return prev;
                 return { ...prev, [id]: [...current, option] };
             }
         });
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        setIsSubmitting(true);
-        onSubmit(formData);
+    // --- Helper to Determine Placeholder & Style for Attributes ---
+    const getAttributeConfig = (fieldId: string) => {
+        if (!isAttributeAllocation || !context?.userClass) return { placeholder: undefined, isPrimary: false };
+        
+        // Find matching class guide (simple string matching)
+        const classKey = Object.keys(CLASS_STATS_GUIDE).find(k => 
+            context.userClass!.toLowerCase().includes(k)
+        );
+        
+        if (!classKey) return { placeholder: "Valor...", isPrimary: false };
+        
+        const guide = CLASS_STATS_GUIDE[classKey];
+        const isPrimary = guide.primary.includes(fieldId);
+        const isStandardArray = context.method?.toLowerCase().includes("padrão") || context.method?.toLowerCase().includes("standard");
+
+        let placeholder = "Valor...";
+        if (isStandardArray) {
+            placeholder = `Sugerido: ${guide.optimal[fieldId] || "8"}`;
+        } else {
+            placeholder = isPrimary ? "⭐ Principal (Max)" : "Secundário";
+        }
+
+        return { placeholder, isPrimary };
     };
 
     return (
-        <div className="mt-8 mx-auto w-full max-w-lg bg-[#181614] border-2 border-double border-yellow-900/40 rounded-sm p-8 shadow-[0_10px_40px_rgba(0,0,0,0.5)] animate-fade-in relative overflow-hidden group">
+        <div className="mt-8 mx-auto max-w-lg relative group animate-fade-in">
+             {/* Efeito de Borda Dourada */}
+             <div className="absolute -inset-0.5 bg-gradient-to-b from-yellow-800 to-yellow-950 rounded-lg opacity-50 blur-[2px]"></div>
              
-             {/* Background Texture Effect */}
-             <div className="absolute inset-0 bg-gradient-to-b from-[#25211e] to-[#161412] opacity-80 pointer-events-none"></div>
-             
-             {/* Corner Ornaments */}
-             <CornerDecoration className="top-0 left-0" />
-             <CornerDecoration className="top-0 right-0 rotate-90" />
-             <CornerDecoration className="bottom-0 right-0 rotate-180" />
-             <CornerDecoration className="bottom-0 left-0 -rotate-90" />
-
-             {/* Content */}
-             <div className="relative z-10">
-                 <div className="mb-4 text-center">
-                     <h3 className="text-yellow-600 font-fantasy text-xl tracking-widest uppercase">
-                        {safeTitle}
+             <div className="relative bg-[#1a1816] border border-yellow-900/60 p-6 rounded-lg shadow-2xl">
+                 <div className="mb-6 text-center border-b border-yellow-900/30 pb-4">
+                     <h3 className="text-yellow-600 font-fantasy text-xl tracking-[0.2em] uppercase drop-shadow-md">
+                        {activeSchema.titulo || "Ficha de Personagem"}
                      </h3>
-                     <DividerDecoration />
                  </div>
 
-                 <form onSubmit={handleSubmit} className="space-y-6">
-                    {(safeFields || []).map((field, index) => {
-                        // Safe ID and Label generation
-                        const fieldId = field.id || `field_${index}`;
-                        const fieldLabel = field.label || `Campo ${index + 1}`;
-                        
-                        // Check for Name field safely
-                        const isNameField = (typeof fieldId === 'string' && fieldId.toLowerCase().includes('nome')) || 
-                                            (typeof fieldLabel === 'string' && fieldLabel.toLowerCase().includes('nome'));
+                 {/* STAT BANK HELPER FOR ALLOCATION */}
+                 {isAttributeAllocation && (
+                     <div className="mb-6 p-4 bg-stone-900/50 border border-stone-700 rounded-lg text-center animate-fade-in">
+                         <span className="text-[10px] text-stone-500 uppercase tracking-[0.2em] block mb-2 font-bold">
+                             Banco de Valores (Arranjo Padrão)
+                         </span>
+                         <div className="flex justify-center gap-3 font-fantasy text-lg md:text-xl text-yellow-500">
+                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">15</span>
+                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">14</span>
+                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">13</span>
+                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">12</span>
+                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">10</span>
+                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30 text-stone-500">8</span>
+                         </div>
+                         <p className="text-xs text-stone-600 mt-2 italic font-serif">
+                             Distribua estes valores nos campos abaixo conforme sua estratégia.
+                         </p>
+                     </div>
+                 )}
 
+                 <form onSubmit={(e) => { e.preventDefault(); setIsSubmitting(true); onSubmit(formData); }} className="space-y-5">
+                    {safeFields.map((field: any, idx: number) => {
+                        const { placeholder: smartPlaceholder, isPrimary } = getAttributeConfig(field.id);
+                        
                         return (
-                        <div key={fieldId} className="flex flex-col gap-2">
-                            <label className="flex items-center gap-2 text-stone-400 text-xs font-bold uppercase tracking-wider pl-1">
-                                {getFieldIcon(fieldLabel)}
-                                {fieldLabel}
-                                {field.max_select && <span className="text-[10px] text-stone-600 ml-auto">(Max: {field.max_select})</span>}
+                        <div key={field.id || idx} className="flex flex-col gap-2">
+                            <label className="text-stone-400 text-xs font-bold uppercase tracking-widest flex justify-between items-center">
+                                <span className={isPrimary ? "text-yellow-500" : ""}>{field.label}</span>
+                                {isPrimary && <span className="text-[10px] text-yellow-600 ml-2">★ RECOMENDADO</span>}
+                                {field.max_select && <span className="text-[10px] text-stone-600">(Max: {field.max_select})</span>}
                             </label>
                             
                             {field.type === 'text' && (
-                                <div className="flex gap-2 relative">
-                                    <input 
-                                        type="text"
-                                        placeholder={field.placeholder}
-                                        value={formData[fieldId] || ''}
-                                        onChange={(e) => handleInputChange(fieldId, e.target.value)}
-                                        className="bg-[#0c0b0a] border-b-2 border-stone-800 rounded-t p-3 text-stone-200 focus:border-yellow-700 outline-none font-serif placeholder-stone-700 w-full transition-colors focus:bg-[#1a1816]"
-                                    />
-                                    {isNameField && (
-                                        <button
-                                            type="button"
-                                            onClick={() => handleInputChange(fieldId, "Gerar com IA")}
-                                            className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1 bg-gradient-to-r from-yellow-900/40 to-yellow-800/40 border border-yellow-700/50 rounded text-yellow-500 text-[10px] font-bold hover:from-yellow-900/60 hover:to-yellow-800/60 transition-all uppercase tracking-wider flex items-center gap-1 shadow-sm"
-                                            title="A IA escolherá um nome temático para você"
-                                        >
-                                            <span>✨</span> IA
-                                        </button>
+                                <input 
+                                    type="text"
+                                    placeholder={smartPlaceholder || field.placeholder}
+                                    value={formData[field.id] || ''}
+                                    onChange={(e) => handleInputChange(field.id, e.target.value)}
+                                    className={`bg-black/30 border rounded p-3 text-stone-200 outline-none font-serif w-full placeholder-stone-600 focus:placeholder-stone-500/50
+                                        ${isPrimary 
+                                            ? 'border-yellow-700/60 ring-1 ring-yellow-900/30 focus:border-yellow-500' 
+                                            : 'border-stone-700 focus:border-yellow-700'}
+                                    `}
+                                />
+                            )}
+
+                            {field.type === 'select' && (
+                                 <div className="relative">
+                                     <select
+                                        value={formData[field.id] || ''}
+                                        onChange={(e) => handleInputChange(field.id, e.target.value)}
+                                        className="w-full bg-black/30 border border-stone-700 rounded p-3 text-stone-200 focus:border-yellow-700 outline-none font-serif appearance-none cursor-pointer"
+                                     >
+                                        <option value="">Selecione...</option>
+                                        {(field.options || []).map((opt: string, i: number) => (
+                                            <option key={i} value={opt}>{opt}</option>
+                                        ))}
+                                     </select>
+                                     <div className="absolute right-3 top-3.5 text-stone-500 pointer-events-none text-xs">▼</div>
+                                </div>
+                            )}
+
+                            {/* DYNAMIC HELPERS FOR ATTRIBUTES (PASSO 1) */}
+                            {field.id === 'atributos' && formData[field.id] && (
+                                <div className="animate-fade-in mt-3 space-y-3">
+                                    {/* Rolagem Helper */}
+                                    {formData[field.id].toString().toLowerCase().includes('rolagem') && (
+                                        <div className="p-3 bg-indigo-900/40 border border-indigo-500/30 rounded text-xs text-indigo-200 font-serif shadow-inner">
+                                            <p className="font-bold text-indigo-100 mb-1 flex items-center gap-2">
+                                                <span className="text-lg">🎲</span> O Destino Decide
+                                            </p>
+                                            <p>Ao confirmar, o Mestre rolará 4d6 (descartando o menor) 6 vezes para você.</p>
+                                        </div>
+                                    )}
+                                    
+                                    {/* Point Buy Helper */}
+                                    {formData[field.id].toString().toLowerCase().includes('compra') && (
+                                        <div className="p-3 bg-emerald-900/40 border border-emerald-500/30 rounded text-xs text-emerald-200 font-serif shadow-inner">
+                                            <p className="font-bold text-emerald-100 mb-2 flex items-center gap-2">
+                                                <span className="text-lg">⚖️</span> Compra de Pontos (Total: 27)
+                                            </p>
+                                            <div className="grid grid-cols-4 gap-2 text-center opacity-90">
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">8 = 0</div>
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">9 = 1</div>
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">10 = 2</div>
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">11 = 3</div>
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">12 = 4</div>
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">13 = 5</div>
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">14 = 7</div>
+                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">15 = 9</div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                     {/* Standard Array Helper */}
+                                     {formData[field.id].toString().toLowerCase().includes('padrão') && (
+                                        <div className="p-3 bg-stone-800/60 border border-stone-600/30 rounded text-xs text-stone-300 font-serif shadow-inner">
+                                             <p className="font-bold text-stone-200 mb-1">Valores Fixos:</p>
+                                             <p className="tracking-widest">15, 14, 13, 12, 10, 8</p>
+                                        </div>
                                     )}
                                 </div>
                             )}
 
-                            {field.type === 'select' && field.options && (
-                                 <div className="relative">
-                                     <select
-                                        value={formData[fieldId] || ''}
-                                        onChange={(e) => handleInputChange(fieldId, e.target.value)}
-                                        className="appearance-none bg-[#0c0b0a] border-b-2 border-stone-800 rounded-t p-3 text-stone-200 focus:border-yellow-700 outline-none font-serif w-full cursor-pointer hover:bg-[#1a1816] transition-colors"
-                                     >
-                                        <option value="">-- Selecione --</option>
-                                        {field.options.map((opt, idx) => (
-                                            <option key={idx} value={opt}>{opt}</option>
-                                        ))}
-                                     </select>
-                                     <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-yellow-700">
-                                        <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
-                                     </div>
-                                 </div>
-                            )}
-
-                            {field.type === 'radio' && field.options && (
-                                <div className="flex flex-col gap-2 bg-[#0c0b0a]/50 p-3 rounded border border-stone-800">
-                                    {field.options.map((opt, idx) => (
-                                        <label key={idx} className="flex items-center gap-3 cursor-pointer group hover:bg-stone-800/50 p-1 rounded transition-colors">
-                                            <div className={`w-4 h-4 rounded-full border border-stone-600 flex items-center justify-center group-hover:border-yellow-600 transition-colors ${formData[fieldId] === opt ? 'border-yellow-600' : ''}`}>
-                                                {formData[fieldId] === opt && <div className="w-2 h-2 bg-yellow-600 rounded-full shadow-[0_0_5px_rgba(202,138,4,0.8)]"></div>}
-                                            </div>
-                                            <input 
-                                                type="radio" 
-                                                name={fieldId} 
-                                                value={opt}
-                                                checked={formData[fieldId] === opt}
-                                                onChange={() => handleInputChange(fieldId, opt)}
-                                                className="hidden"
-                                            />
-                                            <span className={`text-sm font-serif ${formData[fieldId] === opt ? 'text-yellow-500 italic' : 'text-stone-500 group-hover:text-stone-300'}`}>{opt}</span>
-                                        </label>
-                                    ))}
-                                </div>
-                            )}
-
-                            {field.type === 'checkbox' && field.options && (
-                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 bg-[#0c0b0a]/50 p-3 rounded border border-stone-800">
-                                    {field.options.map((opt, idx) => {
-                                        const isSelected = (formData[fieldId] || []).includes(opt);
+                            {(field.type === 'radio' || field.type === 'checkbox') && (
+                                <div className="flex flex-col gap-2 bg-black/20 p-2 rounded border border-stone-800/50">
+                                    {(field.options || []).map((opt: string, i: number) => {
+                                        const isSelected = field.type === 'radio' ? formData[field.id] === opt : (formData[field.id] || []).includes(opt);
                                         return (
-                                            <label key={idx} className={`flex items-center gap-3 cursor-pointer group p-2 rounded transition-all border ${isSelected ? 'bg-yellow-900/20 border-yellow-800/50' : 'border-transparent hover:bg-stone-800/50'}`}>
-                                                <div className={`w-4 h-4 rounded border border-stone-600 flex items-center justify-center transition-colors ${isSelected ? 'bg-yellow-900 border-yellow-700' : ''}`}>
-                                                    {isSelected && <span className="text-xs text-yellow-200">✓</span>}
+                                            <label key={i} className="flex items-center gap-3 cursor-pointer hover:bg-white/5 p-1 rounded transition-colors">
+                                                <div className={`w-3 h-3 rounded flex items-center justify-center ${isSelected ? 'bg-yellow-800 border-yellow-600' : 'border border-stone-600'}`}>
+                                                    {isSelected && <div className="w-1.5 h-1.5 bg-yellow-200 rounded-full"></div>}
                                                 </div>
-                                                <input 
-                                                    type="checkbox" 
-                                                    checked={isSelected}
-                                                    onChange={() => handleCheckboxChange(fieldId, opt, field.max_select || 99)}
-                                                    className="hidden"
-                                                />
-                                                <span className={`text-sm font-serif ${isSelected ? 'text-yellow-200' : 'text-stone-500'}`}>{opt}</span>
+                                                {field.type === 'radio' ? (
+                                                    <input type="radio" name={field.id} checked={isSelected} onChange={() => handleInputChange(field.id, opt)} className="hidden" />
+                                                ) : (
+                                                    <input type="checkbox" checked={isSelected} onChange={() => handleCheckboxChange(field.id, opt, field.max_select)} className="hidden" />
+                                                )}
+                                                <span className={`text-sm ${isSelected ? 'text-yellow-100' : 'text-stone-400'}`}>{opt}</span>
                                             </label>
                                         );
                                     })}
-                                 </div>
+                                </div>
                             )}
                         </div>
-                        );
-                    })}
+                    );})}
 
                     <button 
                         type="submit"
                         disabled={isSubmitting}
-                        className="w-full mt-6 bg-gradient-to-r from-yellow-900 to-yellow-800 hover:from-yellow-800 hover:to-yellow-700 border-t border-yellow-600/30 text-yellow-100 font-bold py-3 rounded-sm uppercase tracking-widest transition-all hover:shadow-[0_0_15px_rgba(202,138,4,0.3)] transform hover:-translate-y-0.5 relative overflow-hidden group"
+                        className="w-full mt-6 bg-gradient-to-r from-yellow-900 to-yellow-800 hover:from-yellow-800 hover:to-yellow-700 text-stone-200 font-bold py-3 rounded border border-yellow-700/50 uppercase tracking-widest shadow-lg transition-all"
                     >
-                        <span className="relative z-10 flex items-center justify-center gap-2">
-                             {isSubmitting ? "Selando Contrato..." : "Confirmar Destino"}
-                             {!isSubmitting && <span className="text-lg">✒️</span>}
-                        </span>
-                        <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                        {isSubmitting ? "Gravando..." : "Confirmar Destino"}
                     </button>
                  </form>
              </div>
         </div>
     );
 }
+
+// --- Main App Component ---
+
+const App = () => {
+    const [messages, setMessages] = useState<Message[]>([INITIAL_MESSAGE]);
+    const [status, setStatus] = useState<GameStatus>({
+        nome: "Desconhecido", titulo: "Aventureiro", hp_atual: 10, hp_max: 10, local: "Estrada de Threshold", missao: "Sobreviver", inventario: [], atributos: undefined
+    });
+    const [inputText, setInputText] = useState("");
+    const [isLoading, setIsLoading] = useState(false);
+    const [inputMode, setInputMode] = useState<"texto_livre" | "botoes" | "rolagem" | "formulario">("botoes");
+    const [allowFreeInput, setAllowFreeInput] = useState(true); // Default to true for initial screen
+    const [currentOptions, setCurrentOptions] = useState<Option[]>(INITIAL_BUTTONS);
+    const [currentRollRequest, setCurrentRollRequest] = useState<RollRequest | null>(null);
+    const [currentFormSchema, setCurrentFormSchema] = useState<FormSchema | null>(null);
+    
+    // Track character creation context to provide hints in the second form
+    const [charCreationContext, setCharCreationContext] = useState<{userClass?: string, method?: string} | undefined>(undefined);
+
+    // Audio State
+    const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+    const [volume, setVolume] = useState(1.0);
+    const [isSpeaking, setIsSpeaking] = useState(false);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const gainNodeRef = useRef<GainNode | null>(null);
+
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages, inputMode, allowFreeInput]);
+
+    // Initialize Audio Context on user interaction (handled in toggle)
+    useEffect(() => {
+        if (gainNodeRef.current) {
+            gainNodeRef.current.gain.value = volume;
+        }
+    }, [volume]);
+
+    const playTTS = async (text: string) => {
+        if (!isAudioEnabled) return;
+
+        try {
+            // Initialize AudioContext if not present (browsers require user interaction first)
+            if (!audioContextRef.current) {
+                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+                gainNodeRef.current = audioContextRef.current.createGain();
+                gainNodeRef.current.connect(audioContextRef.current.destination);
+                gainNodeRef.current.gain.value = volume;
+            }
+
+            if (audioContextRef.current.state === 'suspended') {
+                await audioContextRef.current.resume();
+            }
+
+            setIsSpeaking(true);
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            
+            // Clean text for speech (remove JSON and maybe some markdown visual cues)
+            const cleanText = text
+                .split("--- [JSON_DATA] ---")[0] // Remove JSON
+                .replace(/\[🎲.*?\]/g, "") // Remove dice visuals ex: [🎲 d20(15)...]
+                .replace(/\*/g, "") // Remove asterisks
+                .trim();
+
+            if (!cleanText) {
+                setIsSpeaking(false);
+                return;
+            }
+
+            const response = await ai.models.generateContent({
+                model: TTS_MODEL_NAME,
+                contents: [{ parts: [{ text: cleanText }] }],
+                config: {
+                    responseModalities: ['AUDIO'],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: 'Fenrir' }, // "Fenrir" for deep DM voice
+                        },
+                    },
+                },
+            });
+
+            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (base64Audio && audioContextRef.current && gainNodeRef.current) {
+                const audioBuffer = await audioContextRef.current.decodeAudioData(decode(base64Audio).buffer);
+                const source = audioContextRef.current.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(gainNodeRef.current);
+                source.start();
+                source.onended = () => setIsSpeaking(false);
+            } else {
+                setIsSpeaking(false);
+            }
+        } catch (error) {
+            console.error("TTS Error:", error);
+            setIsSpeaking(false);
+        }
+    };
+
+    const handleSendMessage = async (text: string, isSystemRoll: boolean = false) => {
+        if (!text || !text.trim()) return;
+
+        const userMsg: Message = { id: Date.now().toString(), role: "user", text };
+        setMessages(prev => [...prev, userMsg]);
+        setInputText("");
+        setIsLoading(true);
+        setInputMode("texto_livre"); // Reset momentarily while thinking
+
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            
+            // Build history
+            const history = messages.map(m => {
+               if (m.role === 'model') {
+                   // Strip JSON from history to save tokens and confusion, 
+                   // unless it's crucial context. Usually prompt is enough.
+                   return { role: m.role, parts: [{ text: m.text }] };
+               }
+               return { role: m.role, parts: [{ text: m.text }] };
+            });
+
+            // Add new message
+            history.push({ role: "user", parts: [{ text: text }] });
+
+            const response = await ai.models.generateContent({
+                model: MODEL_NAME,
+                contents: history,
+                config: {
+                    systemInstruction: SYSTEM_INSTRUCTION,
+                }
+            });
+
+            const responseText = response.text || "";
+            
+            // Parse Logic
+            const parts = responseText.split("--- [JSON_DATA] ---");
+            const narrative = parts[0].trim();
+            let jsonData: JsonData | null = null;
+            let finalOptions: Option[] = [];
+            let finalRoll: RollRequest | null = null;
+            let finalForm: FormSchema | null = null;
+            let nextMode: "texto_livre" | "botoes" | "rolagem" | "formulario" = "texto_livre";
+            let nextAllowInput = false;
+            let imageUrl: string | undefined = undefined;
+
+            // Handle Scene generation hook
+            if (narrative.includes("--- [CENA VISUAL SUGERIDA] ---")) {
+                const scenePrompt = "Dark fantasy rpg landscape, " + narrative.substring(0, 100);
+                try {
+                    const imgRes = await ai.models.generateContent({
+                        model: IMAGE_MODEL_NAME,
+                        contents: { parts: [{ text: scenePrompt }] }
+                    });
+                     // Extract base64
+                    const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+                    if (part) {
+                        imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                    }
+                } catch (e) { console.error("Image gen failed", e); }
+            }
+
+            if (parts[1]) {
+                try {
+                    const cleanJson = parts[1].trim().replace(/```json/g, "").replace(/```/g, "");
+                    jsonData = JSON.parse(cleanJson);
+                    
+                    if (jsonData) {
+                        // Update Status
+                        if (jsonData.status_jogador) {
+                            setStatus(prev => ({ ...prev, ...jsonData!.status_jogador }));
+                        }
+                        
+                        // Handle Avatar Update
+                        if (jsonData.update_avatar?.trigger && jsonData.update_avatar.visual_prompt) {
+                             const avatarPrompt = "Fantasy RPG Portrait, " + jsonData.update_avatar.visual_prompt;
+                             const avatarRes = await ai.models.generateContent({
+                                model: IMAGE_MODEL_NAME,
+                                contents: { parts: [{ text: avatarPrompt }] }
+                             });
+                             const part = avatarRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+                             if (part) {
+                                 setStatus(prev => ({ ...prev, avatarUrl: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` }));
+                             }
+                        }
+
+                        // Handle Interface
+                        if (jsonData.interface) {
+                            nextMode = jsonData.interface.modo;
+                            nextAllowInput = !!jsonData.interface.permitir_input_livre;
+                            
+                            if (nextMode === 'botoes') {
+                                if (Array.isArray(jsonData.interface.conteudo) && jsonData.interface.conteudo.length > 0) {
+                                    finalOptions = jsonData.interface.conteudo as Option[];
+                                } else {
+                                    // Fallback if AI requests buttons but sends empty list
+                                    finalOptions = [{ label: "Continuar", value: "Continuar" }];
+                                }
+                            } else if (nextMode === 'rolagem' && jsonData.interface.pedir_rolagem) {
+                                finalRoll = jsonData.interface.pedir_rolagem;
+                            } else if (nextMode === 'formulario' && jsonData.interface.conteudo) {
+                                finalForm = jsonData.interface.conteudo as FormSchema;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error("JSON Parse Error", e);
+                }
+            }
+
+            const modelMsg: Message = {
+                id: Date.now().toString(),
+                role: "model",
+                text: narrative,
+                jsonData: jsonData || undefined,
+                options: finalOptions,
+                imageUrl: imageUrl,
+                form: finalForm || undefined
+            };
+
+            setMessages(prev => [...prev, modelMsg]);
+            setInputMode(nextMode);
+            setAllowFreeInput(nextAllowInput);
+            
+            // Trigger TTS
+            playTTS(narrative);
+
+            // Safety: If buttons are requested, ensure options exist. If not, clear them.
+            if (nextMode === 'botoes') {
+                setCurrentOptions(finalOptions);
+            } else {
+                setCurrentOptions([]);
+            }
+
+            if (finalRoll) setCurrentRollRequest(finalRoll);
+            if (finalForm) setCurrentFormSchema(finalForm);
+
+
+        } catch (error) {
+            console.error("API Error", error);
+            const errorMsg: Message = {
+                id: Date.now().toString(),
+                role: "model",
+                text: "O tecido da realidade tremeu (Erro de API). Tente novamente."
+            };
+            setMessages(prev => [...prev, errorMsg]);
+            setInputMode("texto_livre");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleRoll = (result: number, max: number) => {
+        handleSendMessage(`[SISTEMA: O Jogador rolou d${max} e obteve: ${result}]`, true);
+    };
+
+    const handleFormSubmit = (values: Record<string, string | string[]>) => {
+        // Capture context if this is the character registration form
+        if (values.classe && values.atributos) {
+            setCharCreationContext({
+                userClass: values.classe as string,
+                method: values.atributos as string
+            });
+        }
+        
+        const valueString = JSON.stringify(values);
+        handleSendMessage(`[SISTEMA: Ficha preenchida: ${valueString}]`, true);
+    };
+
+    // Helper to render the text input area to avoid duplication
+    const renderInputArea = () => (
+        <div className="flex gap-2 max-w-4xl mx-auto w-full">
+            <input
+                type="text"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage(inputText)}
+                placeholder="O que você faz?"
+                disabled={isLoading}
+                className="flex-1 bg-stone-900 border border-stone-700 text-stone-200 p-3 rounded focus:border-yellow-700 outline-none font-serif"
+            />
+            <button
+                onClick={() => handleSendMessage(inputText)}
+                disabled={isLoading || !inputText.trim()}
+                className="bg-yellow-900/30 text-yellow-600 border border-yellow-800/50 px-6 rounded font-bold hover:bg-yellow-900/50 disabled:opacity-50 transition-colors uppercase tracking-widest text-sm"
+            >
+                Enviar
+            </button>
+        </div>
+    );
+
+    return (
+        <div className="flex h-full w-full bg-[#1a1816] text-[#d1c4b2] overflow-hidden font-sans">
+            {/* Sidebar - Desktop Only for now or simplistic */}
+            <div className="hidden md:flex flex-col w-72 border-r border-[#3e352f] bg-[#141210] p-4 gap-4 overflow-y-auto">
+                 <div className="flex flex-col items-center gap-2 mb-4">
+                     <div className="w-32 h-32 rounded-full border-2 border-yellow-900 overflow-hidden bg-black shadow-lg relative">
+                         {status.avatarUrl ? (
+                             <img src={status.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                         ) : (
+                             <div className="w-full h-full flex items-center justify-center text-4xl text-stone-700">?</div>
+                         )}
+                     </div>
+                     <h2 className="font-fantasy text-xl text-yellow-600">{status.nome}</h2>
+                     <span className="text-xs uppercase tracking-widest text-stone-500">{status.titulo}</span>
+                 </div>
+
+                 <div className="space-y-4">
+                     <div>
+                         <div className="flex justify-between text-xs uppercase font-bold text-stone-500 mb-1">
+                             <span>Vitalidade</span>
+                             <span>{status.hp_atual}/{status.hp_max}</span>
+                         </div>
+                         <div className="h-2 bg-stone-800 rounded-full overflow-hidden">
+                             <div 
+                                className="h-full bg-red-800 transition-all duration-500" 
+                                style={{ width: `${(status.hp_atual / status.hp_max) * 100}%`}}
+                             ></div>
+                         </div>
+                     </div>
+
+                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
+                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Local Atual</h4>
+                         <p className="font-serif text-sm text-stone-300">{status.local}</p>
+                     </div>
+
+                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
+                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Missão</h4>
+                         <p className="font-serif text-sm text-stone-300 italic">"{status.missao}"</p>
+                     </div>
+
+                     <DividerDecoration />
+
+                     {/* AUDIO CONTROLS */}
+                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f] space-y-3">
+                         <div className="flex justify-between items-center">
+                            <h4 className="text-xs uppercase font-bold text-stone-500">Narração do Mestre</h4>
+                            {isSpeaking && <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>}
+                         </div>
+                         
+                         <label className="flex items-center gap-2 cursor-pointer">
+                             <div className="relative">
+                                 <input type="checkbox" className="hidden" checked={isAudioEnabled} onChange={() => setIsAudioEnabled(!isAudioEnabled)} />
+                                 <div className={`w-10 h-5 rounded-full shadow-inner transition-colors ${isAudioEnabled ? 'bg-yellow-900' : 'bg-stone-700'}`}></div>
+                                 <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-stone-300 shadow transition-transform ${isAudioEnabled ? 'translate-x-5' : 'translate-x-0'}`}></div>
+                             </div>
+                             <span className="text-sm text-stone-400">{isAudioEnabled ? "Ligado" : "Desligado"}</span>
+                         </label>
+
+                         <div>
+                             <h4 className="text-xs uppercase font-bold text-stone-500 mb-1">Volume</h4>
+                             <input 
+                                type="range" 
+                                min="0" 
+                                max="1" 
+                                step="0.1" 
+                                value={volume} 
+                                onChange={(e) => setVolume(parseFloat(e.target.value))}
+                                className="w-full h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer accent-yellow-700"
+                             />
+                         </div>
+                     </div>
+                 </div>
+            </div>
+
+            {/* Main Chat Area */}
+            <div className="flex-1 flex flex-col relative">
+                {/* Messages Area */}
+                <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
+                    {messages.map((msg) => (
+                        <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-fade-in`}>
+                             <div className={`max-w-[90%] md:max-w-[80%] rounded-lg p-4 md:p-6 shadow-xl ${
+                                 msg.role === 'user' 
+                                 ? 'bg-stone-800/80 text-stone-200 border border-stone-700' 
+                                 : 'bg-[#1e1c19]/90 text-[#d1c4b2] border border-[#3e352f]'
+                             }`}>
+                                 {msg.imageUrl && (
+                                     <div className="mb-4 rounded-lg overflow-hidden border border-stone-700 relative group">
+                                         <img src={msg.imageUrl} alt="Scene" className="w-full h-auto max-h-[60vh] object-cover" />
+                                         
+                                         {/* Character Stats Overlay */}
+                                         {msg.jsonData?.status_jogador?.atributos && (
+                                            <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center p-6 text-center backdrop-blur-[2px] transition-opacity duration-700 opacity-0 animate-fade-in group-hover:opacity-100">
+                                                <h3 className="font-fantasy text-2xl md:text-4xl text-yellow-500 mb-4 drop-shadow-lg border-b border-yellow-800/50 pb-2 w-full max-w-md">
+                                                    {msg.jsonData.status_jogador.nome}, {msg.jsonData.status_jogador.titulo.split("•")[1] || "Aventureiro"}
+                                                </h3>
+                                                <p className="text-stone-300 font-serif italic mb-6 text-sm md:text-base">
+                                                    "Seus atributos foram definidos pelo destino."
+                                                </p>
+                                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 w-full max-w-lg">
+                                                    {Object.entries(msg.jsonData.status_jogador.atributos).map(([key, val]) => (
+                                                        <div key={key} className="bg-stone-900/80 p-2 md:p-3 rounded border border-yellow-900/40 shadow-lg backdrop-blur-sm">
+                                                            <div className="text-yellow-700 text-[10px] md:text-xs uppercase tracking-[0.2em] font-bold mb-1">{key}</div>
+                                                            <div className="text-stone-100 font-serif text-lg md:text-xl font-bold">{val}</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                         )}
+                                     </div>
+                                 )}
+                                 <div className="markdown-body font-serif leading-relaxed text-sm md:text-base">
+                                     <ReactMarkdown>{msg.text}</ReactMarkdown>
+                                 </div>
+                                 
+                                 {/* Render Form if present in this message and it's the latest */}
+                                 {msg.role === 'model' && msg.form && messages[messages.length - 1].id === msg.id && (
+                                     <DynamicForm 
+                                        schema={msg.form} 
+                                        onSubmit={handleFormSubmit}
+                                        context={charCreationContext} 
+                                     />
+                                 )}
+                             </div>
+                        </div>
+                    ))}
+                    {isLoading && (
+                        <div className="flex justify-start animate-pulse">
+                            <div className="bg-[#1e1c19] p-4 rounded-lg border border-[#3e352f] text-stone-500 font-serif italic text-sm">
+                                O Mestre está pensando...
+                            </div>
+                        </div>
+                    )}
+                    <div ref={messagesEndRef} />
+                </div>
+
+                {/* Input Area */}
+                <div className="p-4 bg-[#141210] border-t border-[#3e352f]">
+                    {inputMode === 'rolagem' && currentRollRequest ? (
+                         <div className="flex flex-col items-center gap-4 py-4 animate-fade-in">
+                             <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center">
+                                 {currentRollRequest.motivo}
+                             </div>
+                             <button 
+                                onClick={() => handleRoll(Math.floor(Math.random() * 20) + 1, 20)}
+                                className="w-24 h-24 bg-cover bg-center flex items-center justify-center text-3xl font-bold text-white shadow-lg hover:scale-110 transition-transform cursor-pointer rounded-full border-4 border-yellow-800 bg-stone-800"
+                             >
+                                🎲 d20
+                             </button>
+                             <p className="text-stone-500 text-xs">Clique para rolar</p>
+                         </div>
+                    ) : inputMode === 'botoes' ? (
+                        <div className="flex flex-col gap-4 w-full">
+                            <div className="flex flex-wrap gap-2 justify-center animate-fade-in">
+                                {currentOptions.map((opt, idx) => (
+                                    <button
+                                        key={idx}
+                                        onClick={() => handleSendMessage(opt.value)}
+                                        className="bg-stone-800 hover:bg-stone-700 border border-stone-600 px-4 py-3 rounded text-left flex flex-col min-w-[200px] transition-all hover:-translate-y-0.5"
+                                    >
+                                        <span className="text-yellow-500 font-bold text-sm">{opt.label}</span>
+                                        {opt.sub && <span className="text-stone-500 text-xs">{opt.sub}</span>}
+                                    </button>
+                                ))}
+                            </div>
+                            {allowFreeInput && renderInputArea()}
+                        </div>
+                    ) : inputMode === 'formulario' ? (
+                        <div className="text-center text-stone-500 text-sm italic py-2">
+                            Preencha o pergaminho acima para continuar...
+                        </div>
+                    ) : (
+                        renderInputArea()
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const root = createRoot(document.getElementById("root")!);
+root.render(<App />);
