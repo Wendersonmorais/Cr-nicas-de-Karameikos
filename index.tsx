@@ -38,6 +38,16 @@ interface InterfaceData {
   conteudo?: Option[] | FormSchema; // Can be buttons or a form schema
 }
 
+// --- NEW: UI Event Structure for "Juicy" Feedback ---
+interface UiEvent {
+  type: "dice_roll" | "damage" | "heal" | "item_get";
+  value: number | string; // Numeric result or Item name
+  detail: string; // The math: "1d20(19) + 3" or damage type "Cortante"
+  is_critical?: boolean; // Nat 20 or Nat 1
+  is_failure?: boolean; // Nat 1 specific
+  target?: string;
+}
+
 interface JsonData {
   status_jogador: {
     nome: string;
@@ -47,7 +57,7 @@ interface JsonData {
     local: string;
     missao?: string;
     inventario?: string[];
-    atributos?: Record<string, string>; // Added attributes
+    atributos?: Record<string, string>; 
   };
   update_avatar?: {
     trigger: boolean;
@@ -55,6 +65,7 @@ interface JsonData {
     style?: string;
   };
   interface: InterfaceData;
+  ui_event?: UiEvent; // Added structured visual event
 }
 
 interface Message {
@@ -79,7 +90,7 @@ interface GameStatus {
   missao: string;
   avatarUrl?: string;
   inventario?: string[];
-  atributos?: Record<string, string>; // Added attributes
+  atributos?: Record<string, string>; 
 }
 
 // --- Constants & Config ---
@@ -119,9 +130,6 @@ Você é o Mestre dos Calabouços (DM) experiente, imparcial e descritivo, narra
 1. Use o cenário de "Karameikos" (Mystara) para geografia, política (conflito Thyatianos vs. Traladaranos), NPCs importantes (Duque Stefan, Barão Ludwig) e monstros locais.
 2. Use os livros de "D&D 5e" (Livro do Jogador, Mestre, Monstros) APENAS para as mecânicas de regras, testes, classes e combate.
 
-**REGRAS DE DADOS (VISUAL):**
-Sempre mostre a matemática dos dados narrados entre colchetes. Exemplo: [🎲 d20(14) + 5 (força) = 19]
-
 **PROTOCOLO DE SAÍDA (IMPORTANTE - JSON DATA):**
 Toda resposta sua deve terminar com narrativa e, NO FINAL, um bloco JSON oculto separado por "--- [JSON_DATA] ---".
 Este JSON é a ÚNICA fonte da verdade para a interface do jogo.
@@ -130,97 +138,53 @@ Este JSON é a ÚNICA fonte da verdade para a interface do jogo.
 \`\`\`json
 {
   "status_jogador": { 
-      "nome": "String (Use 'Desconhecido' se não souber)", 
-      "titulo": "String (Ex: 'Nível 1 • Ladino')",
+      "nome": "String", 
+      "titulo": "String",
       "hp_atual": Number, 
       "hp_max": Number, 
       "local": "Nome do Local",
       "missao": "Objetivo atual",
       "inventario": ["Item 1", "Item 2"],
-      "atributos": { "Força": "15 (+2)", "Destreza": "12 (+1)", ... } // Opcional, envie APENAS quando houver atualização relevante (ex: criação de ficha)
+      "atributos": { "Força": "15 (+2)", ... }
+  },
+  "ui_event": { // GERE ESTE CAMPO SEMPRE QUE HOUVER AÇÃO MECÂNICA
+      "type": "dice_roll" | "damage" | "heal" | "item_get",
+      "value": Number (ou String p/ items),
+      "detail": "String Explicativa (Ex: '1d20(18) + 4')", 
+      "is_critical": Boolean, // True para Nat 20
+      "is_failure": Boolean, // True para Nat 1
+      "target": "Nome do Alvo (ou 'Jogador')"
   },
   "update_avatar": {
-      "trigger": Boolean,  // True se o visual do personagem mudou ou foi criado
-      "visual_prompt": "String para gerar imagem do rosto (opcional)", 
+      "trigger": Boolean,
+      "visual_prompt": "String", 
       "style": "Dark Fantasy RPG Art"
   },
   "interface": {
       "modo": "String ('rolagem' | 'botoes' | 'formulario' | 'texto_livre')",
-      "permitir_input_livre": Boolean, // SE TRUE, exibe campo de texto abaixo dos botões
-      "pedir_rolagem": { // PREENCHER SE MODO == 'rolagem'
+      "permitir_input_livre": Boolean, 
+      "pedir_rolagem": { 
           "dado": "d20",
           "motivo": "Teste de Furtividade",
           "dificuldade_oculta": 12
       },
-      "conteudo": [ ... ] // Lista de opções (se botoes) ou Schema do formulário (se formulario)
+      "conteudo": [ ... ] 
   }
 }
 \`\`\`
 
-**PROTOCOLO DE AGÊNCIA DO JOGADOR (INPUT LIVRE):**
-1. **Improvisação:** Em RPGs de mesa, a liberdade é total. Nunca limite o jogador apenas às opções pré-calculadas.
-2. **Instrução de Interface:** Sempre que você oferecer escolhas (botões), você DEVE sinalizar para a interface que a **Caixa de Texto Livre** também deve estar ativa.
-3. **No JSON:** Defina a propriedade \`"permitir_input_livre": true\` dentro do objeto de interface. Isso fará o aplicativo exibir o campo de digitação abaixo dos botões.
+**REGRAS DE IMERSÃO E COMBATE VISUAL (UI CARDS):**
+1. **Não descreva a matemática no texto corrido.** Use a narrativa para descrever o impacto do golpe ("A espada rasga a armadura...").
+2. **Envie os números no JSON \`ui_event\`**.
+   - Se for um teste: \`type: "dice_roll", value: 22, detail: "1d20(19) + 3 (For)"\`
+   - Se for dano: \`type: "damage", value: 6, detail: "Corte", target: "Goblin"\`
+   - Se encontrar item: \`type: "item_get", value: "Poção de Cura", detail: "Raro"\`
 
-**REGRAS DE INTERFACE E CRIAÇÃO DE PERSONAGEM (PASSO A PASSO):**
-
-**PASSO 1: DADOS INICIAIS**
-- Ao iniciar, envie \`interface.modo = "formulario"\` com o schema.
-- **IMPORTANTE:** Se o jogador escolheu um arquétipo (Legionário, Raposa, Erudito), adicione \`"defaultValue": "Nome da Classe"\` no campo "classe" para vir pré-selecionado.
-   - Legionário -> "Guerreiro (Thyatiano)"
-   - Raposa -> "Ladino (Traladarano)"
-   - Erudito -> "Mago (Glantri)"
-
-   **SCHEMA BASE:**
-   \`\`\`json
-   {
-      "titulo": "Registro de Aventureiro",
-      "fields": [
-          { "id": "nome", "type": "text", "label": "Nome do Personagem", "placeholder": "Ex: Voron" },
-          { "id": "classe", "type": "select", "label": "Classe Escolhida", "defaultValue": null, "options": ["Guerreiro (Thyatiano)", "Ladino (Traladarano)", "Mago (Glantri)", "Clérigo (Karameikos)"] },
-          { "id": "atributos", "type": "select", "label": "Método de Atributos", "options": ["Arranjo Padrão (15, 14, 13, 12, 10, 8)", "Rolagem de Dados (4d6 drop lowest)", "Compra de Pontos (27 pts)"] },
-          { "id": "equipamento", "type": "radio", "label": "Kit Inicial", "options": ["Kit Aventureiro (Mochila/Corda)", "Kit Explorador (Rações/Tochas)"] }
-      ]
-   }
-   \`\`\`
-
-**PASSO 2: DISTRIBUIÇÃO DE ATRIBUTOS (PÓS-SUBMISSÃO)**
-Assim que o jogador enviar o formulário acima:
-1. **Analise o método escolhido.**
-   - Se for **Rolagem**: ROLE os dados explicitamente no texto (ex: "Rolei 6 vezes: 16, 14, 12...").
-   - Se for **Compra**: Relembre os custos (8=0, 15=9).
-2. **Envie IMEDIATAMENTE um SEGUNDO formulário** para alocação.
-   - Os placeholders dos campos serão preenchidos automaticamente pela interface, mas envie o schema abaixo.
-
-   **SCHEMA ALOCAÇÃO:**
-   \`\`\`json
-   {
-      "titulo": "Alocação de Atributos",
-      "fields": [
-        { "id": "for", "type": "text", "label": "Força", "placeholder": "..." },
-        { "id": "des", "type": "text", "label": "Destreza", "placeholder": "..." },
-        { "id": "con", "type": "text", "label": "Constituição", "placeholder": "..." },
-        { "id": "int", "type": "text", "label": "Inteligência", "placeholder": "..." },
-        { "id": "sab", "type": "text", "label": "Sabedoria", "placeholder": "..." },
-        { "id": "car", "type": "text", "label": "Carisma", "placeholder": "..." }
-      ]
-   }
-   \`\`\`
-
-3. **FINALIZAÇÃO DE PERSONAGEM:**
-   - Após o jogador submeter os atributos, calcule os modificadores (ex: 15 = +2).
-   - Preencha o campo \`atributos\` no JSON \`status_jogador\`.
-   - **GERE UMA IMAGEM** do personagem usando o gatilho \`--- [CENA VISUAL SUGERIDA] ---\`.
-
-3. **OPÇÕES DE AÇÃO (BOTOES):**
-   - Em momentos de decisão ou combate, use \`interface.modo = "botoes"\` e \`"permitir_input_livre": true\`.
-   - Forneça 3 a 4 opções táticas e claras no array \`interface.conteudo\`.
-
-**SISTEMA DE SAVE/LOAD:**
-Se solicitado "Save", gere um bloco de texto visível com \`[CHECKPOINT_KARAMEIKOS]\`.
-
-**SISTEMA DE RETRATO & CENAS:**
-Para gerar imagens de cenário, use o bloco \`--- [CENA VISUAL SUGERIDA] ---\` dentro da narrativa.
+**REGRAS DE CRIAÇÃO DE PERSONAGEM:**
+1. Ao iniciar, use \`interface.modo = "formulario"\` com o schema de criação.
+2. Após submissão, envie schema de alocação de atributos.
+3. Use os placeholders sugeridos (ex: "Sugerido 15") baseados na classe.
+4. Ao finalizar, gere imagem com \`--- [CENA VISUAL SUGERIDA] ---\`.
 `;
 
 const INITIAL_BUTTONS: Option[] = [
@@ -261,6 +225,73 @@ const DividerDecoration = () => (
      <div className="h-[1px] w-12 bg-gradient-to-l from-transparent to-yellow-700"></div>
   </div>
 );
+
+// --- NEW: EventCard Component (The "Juice") ---
+const EventCard = ({ event }: { event: UiEvent }) => {
+    // Styling configurations based on event type
+    let cardStyle = "border-stone-700 bg-stone-900/90";
+    let icon = "🎲";
+    let title = "Rolagem";
+    let valueColor = "text-stone-200";
+    let animation = "animate-fade-in";
+
+    if (event.type === 'damage') {
+        cardStyle = "border-red-900/60 bg-gradient-to-br from-red-950/90 to-black";
+        icon = "⚔️";
+        title = "Dano Recebido";
+        valueColor = "text-red-500";
+        animation = "animate-pulse"; // Heartbeat for damage
+    } else if (event.type === 'heal') {
+        cardStyle = "border-emerald-800/60 bg-gradient-to-br from-emerald-950/90 to-black";
+        icon = "🧪";
+        title = "Recuperação";
+        valueColor = "text-emerald-400";
+    } else if (event.type === 'item_get') {
+        cardStyle = "border-yellow-700/50 bg-gradient-to-br from-yellow-950/40 to-black";
+        icon = "🎒";
+        title = "Item Adquirido";
+        valueColor = "text-yellow-200";
+    } else if (event.type === 'dice_roll') {
+        if (event.is_critical) {
+            cardStyle = "border-yellow-400/80 bg-gradient-to-br from-yellow-900/50 to-black shadow-[0_0_15px_rgba(250,204,21,0.2)]";
+            icon = "🔥";
+            title = "Sucesso Crítico!";
+            valueColor = "text-yellow-400";
+            animation = "animate-bounce"; // Bounce for crit
+        } else if (event.is_failure) {
+            cardStyle = "border-stone-600 bg-gray-900 grayscale opacity-90";
+            icon = "💀";
+            title = "Falha Crítica";
+            valueColor = "text-stone-500";
+            animation = "shake"; // We'd add a shake keyframe normally, simulating with margin jitter
+        }
+    }
+
+    return (
+        <div className={`mt-4 mx-auto max-w-sm rounded-lg border-2 p-4 flex items-center justify-between shadow-xl backdrop-blur-sm ${cardStyle} ${animation} transform transition-all hover:scale-105`}>
+            <div className="flex flex-col">
+                <span className="text-[10px] uppercase tracking-widest font-bold opacity-70 mb-1 flex items-center gap-1">
+                    {icon} {title}
+                </span>
+                <span className="text-xs text-stone-400 font-serif italic">
+                    {event.target ? `Alvo: ${event.target}` : event.detail}
+                </span>
+            </div>
+            
+            <div className="flex flex-col items-end">
+                <span className={`text-3xl font-fantasy font-bold drop-shadow-md ${valueColor}`}>
+                    {event.value}
+                </span>
+                {/* Transparent Math for Dice Rolls */}
+                {event.type === 'dice_roll' && (
+                    <span className="text-[10px] text-stone-500 font-mono">
+                        {event.detail}
+                    </span>
+                )}
+            </div>
+        </div>
+    );
+};
 
 // --- Audio Utils ---
 function decode(base64: string) {
@@ -952,6 +983,11 @@ const App = () => {
                                  <div className="markdown-body font-serif leading-relaxed text-sm md:text-base">
                                      <ReactMarkdown>{msg.text}</ReactMarkdown>
                                  </div>
+
+                                 {/* --- NEW: VISUAL EVENT CARD --- */}
+                                 {msg.role === 'model' && msg.jsonData?.ui_event && (
+                                     <EventCard event={msg.jsonData.ui_event} />
+                                 )}
                                  
                                  {/* Render Form if present in this message and it's the latest */}
                                  {msg.role === 'model' && msg.form && messages[messages.length - 1].id === msg.id && (
