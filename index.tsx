@@ -703,6 +703,24 @@ const ChatMessage: React.FC<{ msg: Message; onOptionSelect?: (value: string) => 
                         strong: ({node, ...props}) => <strong className="text-[#e6dfd3] font-bold" {...props} />,
                         em: ({node, ...props}) => <em className="text-[#c4b59d]" {...props} />,
                         blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-yellow-900/30 pl-4 italic text-stone-500 my-4" {...props} />,
+                        a: ({node, href, children, ...props}) => {
+                             // Security: Prevent javascript: links (XSS)
+                             // react-markdown v9+ passes href directly. We ensure it's safe.
+                             if (href?.toLowerCase().trim().startsWith('javascript:')) {
+                                 return <span className="text-stone-500 line-through" title="Link blocked for security">{children}</span>;
+                             }
+                             return (
+                                 <a
+                                     href={href}
+                                     target="_blank"
+                                     rel="noopener noreferrer"
+                                     className="text-yellow-600 hover:text-yellow-500 underline decoration-yellow-900/50 hover:decoration-yellow-500 transition-colors"
+                                     {...props}
+                                 >
+                                     {children}
+                                 </a>
+                             );
+                        },
                         code: ({node, className, children, ...props}) => {
                              const content = String(children).replace(/\n$/, '');
                              // Check if content matches our dice pattern
