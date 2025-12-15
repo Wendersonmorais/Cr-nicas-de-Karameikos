@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback, memo } from "react";
 import { createRoot } from "react-dom/client";
 import { GoogleGenAI } from "@google/genai";
 import ReactMarkdown from "react-markdown";
@@ -599,6 +599,31 @@ const CharacterSidebar = ({ status }: { status: GameStatus }) => {
 };
 
 // Re-using updated components
+
+const generateSceneImage = async (prompt: string): Promise<string | null> => {
+  try {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await ai.models.generateContent({
+      model: IMAGE_MODEL_NAME,
+      contents: {
+        parts: [{ text: prompt }],
+      },
+      config: {
+         imageConfig: { aspectRatio: "16:9" }
+      }
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to generate image", e);
+  }
+  return null;
+};
+
 const SaveBlock = ({ content }: { content: string }) => {
     const [copied, setCopied] = useState(false);
 
@@ -636,7 +661,7 @@ const SaveBlock = ({ content }: { content: string }) => {
     );
 }
 
-const ChatMessage: React.FC<{ msg: Message; onOptionSelect?: (value: string) => void }> = ({ msg, onOptionSelect }) => {
+const ChatMessage = memo(({ msg, onOptionSelect }: { msg: Message; onOptionSelect?: (value: string) => void }) => {
   let displayText = msg.text;
   displayText = displayText.replace(/---\s*\*\*STATUS DO GRUPO:\*\*[\s\S]*?---/g, "");
   displayText = displayText.replace(/--- \[OPCOES\] ---[\s\S]*/g, "");
@@ -770,7 +795,7 @@ const ChatMessage: React.FC<{ msg: Message; onOptionSelect?: (value: string) => 
       </div>
     </div>
   );
-};
+});
 
 const DiceLogSidebar = ({ history, isOpen, onClose }: { history: RollEntry[], isOpen: boolean, onClose: () => void }) => {
     if (!isOpen) return null;
@@ -848,7 +873,7 @@ const App = () => {
   const [isLogOpen, setIsLogOpen] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const aiRef = useRef<any>(null); 
+  const aiRef = useRef<any>(null);
 
   // Initialize AI
   useEffect(() => {
@@ -1061,31 +1086,7 @@ const App = () => {
     }
   }, [messages]);
 
-  const generateSceneImage = async (prompt: string): Promise<string | null> => {
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: IMAGE_MODEL_NAME,
-        contents: {
-          parts: [{ text: prompt }],
-        },
-        config: {
-           imageConfig: { aspectRatio: "16:9" }
-        }
-      });
-      
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-        }
-      }
-    } catch (e) {
-      console.error("Failed to generate image", e);
-    }
-    return null;
-  };
-
-  const handleSendMessage = async (text: string) => {
+  const handleSendMessage = useCallback(async (text: string) => {
     if (!text.trim() || isLoading || !aiRef.current) return;
 
     if (!audioContextRef.current) {
@@ -1174,7 +1175,7 @@ const App = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isLoading]);
 
   const handleSaveGame = () => {
       handleSendMessage("(Sistema) Gere um 'CHECKPOINT_KARAMEIKOS' completo seguindo o formato definido nas instruções.");
