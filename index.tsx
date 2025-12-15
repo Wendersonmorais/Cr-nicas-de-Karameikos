@@ -287,10 +287,11 @@ const VolumeSettingsPopup = ({
                  <span className="text-stone-500">{Math.round(musicVolume * 100)}%</span>
               </div>
               <input 
+                aria-label="Volume da música"
                 type="range" min="0" max="1" step="0.05" 
                 value={musicVolume} 
                 onChange={(e) => setMusicVolume(parseFloat(e.target.value))}
-                className="w-full accent-yellow-600 h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer hover:bg-stone-600 transition-colors"
+                className="w-full accent-yellow-600 h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer hover:bg-stone-600 transition-colors focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none"
               />
            </div>
            
@@ -302,10 +303,11 @@ const VolumeSettingsPopup = ({
                  <span className="text-stone-500">{Math.round(narrationVolume * 100)}%</span>
               </div>
               <input 
+                aria-label="Volume da narração"
                 type="range" min="0" max="1" step="0.05" 
                 value={narrationVolume} 
                 onChange={(e) => setNarrationVolume(parseFloat(e.target.value))}
-                className="w-full accent-yellow-600 h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer hover:bg-stone-600 transition-colors"
+                className="w-full accent-yellow-600 h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer hover:bg-stone-600 transition-colors focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none"
               />
            </div>
         </div>
@@ -478,16 +480,18 @@ const GameHeader = ({
             <div className="flex items-center gap-4 relative">
                 <button 
                     onClick={() => setAudioState({...audioState, isMuted: !audioState.isMuted})}
-                    className={`text-xl transition-colors ${audioState.isMuted ? 'text-stone-600' : 'text-stone-300 hover:text-white'}`}
+                    className={`text-xl transition-colors rounded focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none ${audioState.isMuted ? 'text-stone-600' : 'text-stone-300 hover:text-white'}`}
                     title={audioState.isMuted ? "Ativar Som" : "Silenciar"}
+                    aria-label={audioState.isMuted ? "Ativar Som" : "Silenciar"}
                 >
                     {audioState.isMuted ? "🔇" : "🔊"}
                 </button>
 
                 <button 
                     onClick={() => setAudioState({...audioState, isNarrationEnabled: !audioState.isNarrationEnabled})}
-                    className={`text-xl transition-colors relative ${audioState.isNarrationEnabled ? 'text-stone-300 hover:text-white' : 'text-stone-600'}`}
+                    className={`text-xl transition-colors rounded focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none relative ${audioState.isNarrationEnabled ? 'text-stone-300 hover:text-white' : 'text-stone-600'}`}
                     title="Narração"
+                    aria-label={audioState.isNarrationEnabled ? "Desativar Narração" : "Ativar Narração"}
                 >
                     {audioState.isNarrationEnabled ? "🗣️" : "😶"}
                     {audioState.isNarrating && (
@@ -501,8 +505,10 @@ const GameHeader = ({
                 <div className="relative">
                     <button 
                         onClick={() => setAudioState({...audioState, showSettings: !audioState.showSettings})}
-                        className={`text-xl transition-colors ${audioState.showSettings ? 'text-white' : 'text-stone-500 hover:text-stone-300'}`}
+                        className={`text-xl transition-colors rounded focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none ${audioState.showSettings ? 'text-white' : 'text-stone-500 hover:text-stone-300'}`}
                         title="Configurações"
+                        aria-label="Configurações de Áudio"
+                        aria-expanded={audioState.showSettings}
                     >
                         ⚙️
                     </button>
@@ -1251,15 +1257,18 @@ const App = () => {
                 <div className="flex items-center gap-2 overflow-x-auto custom-scrollbar pb-1">
                     <button
                       onClick={() => setIsLogOpen(!isLogOpen)}
-                      className="w-10 h-10 flex items-center justify-center bg-stone-900 hover:bg-stone-800 border border-stone-700 rounded text-stone-400 transition-colors shrink-0"
+                      className="w-10 h-10 flex items-center justify-center bg-stone-900 hover:bg-stone-800 border border-stone-700 rounded text-stone-400 transition-colors shrink-0 focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none"
                       title="Ver Histórico de Rolagens"
+                      aria-label="Ver Histórico de Rolagens"
+                      aria-expanded={isLogOpen}
                     >
                       <span className="text-xl">📜</span>
                     </button>
                     <button
                       onClick={handleSaveGame}
-                      className="w-10 h-10 flex items-center justify-center bg-stone-900 hover:bg-stone-800 border border-stone-700 rounded text-stone-400 transition-colors shrink-0"
+                      className="w-10 h-10 flex items-center justify-center bg-stone-900 hover:bg-stone-800 border border-stone-700 rounded text-stone-400 transition-colors shrink-0 focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none"
                       title="Salvar Jogo"
+                      aria-label="Salvar Jogo"
                       disabled={isLoading}
                     >
                       <span className="text-xl">💾</span>
@@ -1271,8 +1280,9 @@ const App = () => {
                         <button
                           key={d}
                           onClick={() => handleDiceRoll(`d${d}`, Math.floor(Math.random() * d) + 1)}
-                          className="w-10 h-10 flex flex-col items-center justify-center bg-[#1e1c19] hover:bg-red-900 border border-stone-700 hover:border-red-600 rounded text-stone-300 transition-all shrink-0 group relative overflow-hidden"
+                          className="w-10 h-10 flex flex-col items-center justify-center bg-[#1e1c19] hover:bg-red-900 border border-stone-700 hover:border-red-600 rounded text-stone-300 transition-all shrink-0 group relative overflow-hidden focus-visible:ring-2 focus-visible:ring-yellow-600 outline-none"
                           title={diceDescriptions[d]}
+                          aria-label={`Rolar dado de ${d} lados`}
                         >
                           <span className="text-[10px] font-bold opacity-50 absolute top-0.5">d{d}</span>
                           <span className="text-lg font-fantasy group-hover:scale-110 transition-transform">🎲</span>
@@ -1290,6 +1300,7 @@ const App = () => {
                 className="flex gap-4 w-full"
             >
                 <input
+                  aria-label="O que você deseja fazer?"
                   type="text"
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
