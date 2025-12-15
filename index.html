@@ -47,6 +47,26 @@
             margin-bottom: 0.5em;
         }
 
+        /* GAME FEEL ANIMATIONS */
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20% { transform: translateX(-4px) rotate(-2deg); }
+            40% { transform: translateX(4px) rotate(2deg); }
+            60% { transform: translateX(-2px); }
+            80% { transform: translateX(2px); }
+        }
+        .animate-shake {
+            animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+        }
+
+        @keyframes floatUp {
+            0% { transform: translate(-50%, -50%) translateY(0) scale(1); opacity: 1; }
+            100% { transform: translate(-50%, -50%) translateY(-40px) scale(1.2); opacity: 0; }
+        }
+        .animate-float-up {
+            animation: floatUp 2s ease-out forwards;
+        }
+
         /* DICE ROLL VISUAL STYLE */
         .dice-roll {
             display: inline-block;
@@ -61,10 +81,6 @@
             margin: 0 4px;
             font-size: 0.9em;
             letter-spacing: -0.5px;
-        }
-        
-        .dice-btn:active {
-            transform: translateY(2px);
         }
     </style>
 <script type="importmap">

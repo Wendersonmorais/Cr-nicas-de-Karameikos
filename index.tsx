@@ -15,9 +15,9 @@ interface FormField {
   type: "text" | "select" | "radio" | "checkbox";
   label: string;
   placeholder?: string;
-  defaultValue?: string; // Added to support pre-selection
+  defaultValue?: string; 
   options?: string[];
-  max_select?: number; // For checkboxes
+  max_select?: number; 
 }
 
 interface FormSchema {
@@ -33,23 +33,45 @@ interface RollRequest {
 
 interface InterfaceData {
   modo: "rolagem" | "botoes" | "formulario" | "texto_livre";
-  permitir_input_livre?: boolean; // Controls if text input is shown alongside buttons
+  permitir_input_livre?: boolean; 
   pedir_rolagem?: RollRequest;
-  conteudo?: Option[] | FormSchema; // Can be buttons or a form schema
+  conteudo?: Option[] | FormSchema; 
 }
 
-// --- NEW: UI Event Structure for "Juicy" Feedback ---
-interface UiEvent {
-  type: "dice_roll" | "damage" | "heal" | "item_get";
-  value: number | string; // Numeric result or Item name
-  detail: string; // The math: "1d20(19) + 3" or damage type "Cortante"
-  is_critical?: boolean; // Nat 20 or Nat 1
-  is_failure?: boolean; // Nat 1 specific
-  target?: string;
+// --- NEW: Strict Game Engine Event Structure ---
+interface DiceRollData {
+  roll_name: string;
+  d20_result: number;
+  modifier: number;
+  proficiency: number;
+  total_value: number;
+  is_critical: boolean;
+  is_success: boolean;
 }
 
-interface JsonData {
-  status_jogador: {
+interface CombatHitData {
+  target: string;
+  damage: number;
+  damage_type: string;
+  is_critical: boolean;
+}
+
+interface ItemObtainedData {
+  item_name: string;
+  quantity: number;
+  description: string;
+}
+
+interface GameEvent {
+  type: "none" | "dice_roll" | "combat_hit" | "item_obtained";
+  data: DiceRollData | CombatHitData | ItemObtainedData | any;
+}
+
+// The Root JSON Response from the AI
+interface GameResponse {
+  narrative: string;
+  game_event?: GameEvent;
+  status_jogador?: {
     nome: string;
     titulo: string;
     hp_atual: number;
@@ -64,19 +86,16 @@ interface JsonData {
     visual_prompt?: string;
     style?: string;
   };
-  interface: InterfaceData;
-  ui_event?: UiEvent; // Added structured visual event
+  interface?: InterfaceData;
+  form?: FormSchema; // Optional shorthand for interface.conteudo if mode is form
 }
 
 interface Message {
   id: string;
   role: "user" | "model";
   text: string;
-  isStreaming?: boolean;
   imageUrl?: string;
-  isGeneratingImage?: boolean;
-  jsonData?: JsonData; // Parsed JSON data
-  isSavePoint?: boolean;
+  gameResponse?: GameResponse; // Store the full parsed response
   options?: Option[];
   form?: FormSchema;
 }
@@ -98,93 +117,100 @@ const MODEL_NAME = "gemini-2.5-flash";
 const IMAGE_MODEL_NAME = "gemini-2.5-flash-image";
 const TTS_MODEL_NAME = "gemini-2.5-flash-preview-tts";
 
-// --- Tactical Guides for Attributes ---
-const CLASS_STATS_GUIDE: Record<string, { primary: string[], optimal: Record<string, string> }> = {
+const CLASS_GUIDE: Record<string, { main: string[], desc: string, optimal: Record<string, string> }> = {
     "guerreiro": {
-        primary: ["for", "con"],
+        main: ["for"],
+        desc: "Prioridade para dano corpo a corpo.",
         optimal: { for: "15", con: "14", des: "13", sab: "12", car: "10", int: "8" }
     },
     "ladino": {
-        primary: ["des", "int"],
+        main: ["des"],
+        desc: "Essencial para furtividade e ataque.",
         optimal: { des: "15", int: "14", con: "13", car: "12", sab: "10", for: "8" }
     },
     "mago": {
-        primary: ["int", "con"],
+        main: ["int"],
+        desc: "Essencial para lançar magias.",
         optimal: { int: "15", con: "14", des: "13", sab: "12", car: "10", for: "8" }
     },
     "clérigo": {
-        primary: ["sab", "con"],
+        main: ["sab"],
+        desc: "Poder divino e magias.",
         optimal: { sab: "15", con: "14", for: "13", car: "12", int: "10", des: "8" }
     },
      "patrulheiro": {
-        primary: ["des", "sab"],
+        main: ["des", "sab"],
+        desc: "Combate ágil e magias naturais.",
         optimal: { des: "15", sab: "14", con: "13", for: "12", int: "10", car: "8" }
     }
 };
 
 const SYSTEM_INSTRUCTION = `
 **PERSONA:**
-Você é o Mestre dos Calabouços (DM) experiente, imparcial e descritivo, narrando uma campanha de D&D 5ª Edição no cenário do Grão-Ducado de Karameikos (Mystara).
+Você é um Motor de Jogo (Game Engine) e Mestre de RPG narrando Karameikos (D&D 5e).
+Seu objetivo é gerar uma experiência imersiva e visual, separando estritamente a NARRATIVA da MECÂNICA.
 
-**FONTES DE CONHECIMENTO:**
-1. Use o cenário de "Karameikos" (Mystara) para geografia, política (conflito Thyatianos vs. Traladaranos), NPCs importantes (Duque Stefan, Barão Ludwig) e monstros locais.
-2. Use os livros de "D&D 5e" (Livro do Jogador, Mestre, Monstros) APENAS para as mecânicas de regras, testes, classes e combate.
+**REGRA DE OURO (OUTPUT JSON):**
+Você deve SEMPRE responder com um objeto JSON válido. NUNCA envie texto solto fora do JSON.
 
-**PROTOCOLO DE SAÍDA (IMPORTANTE - JSON DATA):**
-Toda resposta sua deve terminar com narrativa e, NO FINAL, um bloco JSON oculto separado por "--- [JSON_DATA] ---".
-Este JSON é a ÚNICA fonte da verdade para a interface do jogo.
-
-**ESTRUTURA DO JSON:**
+**ESTRUTURA OBRIGATÓRIA DO JSON:**
 \`\`\`json
 {
+  "narrative": "A descrição literária da cena, diálogos e ambiente. Use Markdown para formatar (negrito, itálico).",
+  
+  "game_event": {
+    "type": "none" | "dice_roll" | "combat_hit" | "item_obtained",
+    "data": {
+      // SE type="dice_roll":
+      "roll_name": "Nome do Teste (ex: Furtividade)",
+      "d20_result": 15,    // Valor cru do dado
+      "modifier": 3,       // Modificador de atributo
+      "proficiency": 2,    // Bônus de proficiência (se aplicável, ou 0)
+      "total_value": 20,   // Soma final
+      "is_critical": false, // True se d20_result == 20
+      "is_success": true   // Baseado na DC oculta
+      
+      // SE type="combat_hit":
+      // "target": "Goblin", "damage": 5, "damage_type": "Cortante", "is_critical": false
+      
+      // SE type="item_obtained":
+      // "item_name": "Espada Curta", "quantity": 1, "description": "Lâmina enferrujada."
+    }
+  },
+
   "status_jogador": { 
-      "nome": "String", 
-      "titulo": "String",
-      "hp_atual": Number, 
-      "hp_max": Number, 
-      "local": "Nome do Local",
-      "missao": "Objetivo atual",
-      "inventario": ["Item 1", "Item 2"],
-      "atributos": { "Força": "15 (+2)", ... }
+      "nome": "Voron", 
+      "titulo": "Guerreiro Nível 1",
+      "hp_atual": 10, 
+      "hp_max": 10, 
+      "local": "Estrada de Threshold",
+      "missao": "Sobreviver",
+      "inventario": ["Corda", "Tocha"],
+      "atributos": { "for": "15", "des": "12", ... } 
   },
-  "ui_event": { // GERE ESTE CAMPO SEMPRE QUE HOUVER AÇÃO MECÂNICA
-      "type": "dice_roll" | "damage" | "heal" | "item_get",
-      "value": Number (ou String p/ items),
-      "detail": "String Explicativa (Ex: '1d20(18) + 4')", 
-      "is_critical": Boolean, // True para Nat 20
-      "is_failure": Boolean, // True para Nat 1
-      "target": "Nome do Alvo (ou 'Jogador')"
-  },
+
   "update_avatar": {
-      "trigger": Boolean,
-      "visual_prompt": "String", 
+      "trigger": false, // True apenas se a aparência do personagem mudou drasticamente ou é o início
+      "visual_prompt": "Prompt visual para gerar o retrato", 
       "style": "Dark Fantasy RPG Art"
   },
+
   "interface": {
-      "modo": "String ('rolagem' | 'botoes' | 'formulario' | 'texto_livre')",
-      "permitir_input_livre": Boolean, 
-      "pedir_rolagem": { 
-          "dado": "d20",
-          "motivo": "Teste de Furtividade",
-          "dificuldade_oculta": 12
-      },
-      "conteudo": [ ... ] 
+      "modo": "botoes" | "formulario" | "texto_livre" | "rolagem",
+      "permitir_input_livre": true,
+      "conteudo": [ // Se modo="botoes"
+          {"label": "Atacar", "value": "Eu ataco com minha espada", "sub": "Ação Padrão"},
+          {"label": "Fugir", "value": "Tento fugir para a floresta"}
+      ],
+      // Se modo="formulario", preencher "conteudo" com o schema do formulário
   }
 }
 \`\`\`
 
-**REGRAS DE IMERSÃO E COMBATE VISUAL (UI CARDS):**
-1. **Não descreva a matemática no texto corrido.** Use a narrativa para descrever o impacto do golpe ("A espada rasga a armadura...").
-2. **Envie os números no JSON \`ui_event\`**.
-   - Se for um teste: \`type: "dice_roll", value: 22, detail: "1d20(19) + 3 (For)"\`
-   - Se for dano: \`type: "damage", value: 6, detail: "Corte", target: "Goblin"\`
-   - Se encontrar item: \`type: "item_get", value: "Poção de Cura", detail: "Raro"\`
-
-**REGRAS DE CRIAÇÃO DE PERSONAGEM:**
-1. Ao iniciar, use \`interface.modo = "formulario"\` com o schema de criação.
-2. Após submissão, envie schema de alocação de atributos.
-3. Use os placeholders sugeridos (ex: "Sugerido 15") baseados na classe.
-4. Ao finalizar, gere imagem com \`--- [CENA VISUAL SUGERIDA] ---\`.
+**DIRETRIZES DE MESTRAGEM:**
+1. **Juice & Feel**: Quando o jogador fizer uma ação que exija teste, GERE o teste você mesmo e retorne o resultado em \`game_event\`. Não peça para o jogador rolar se você pode simular a rolagem para dar agilidade.
+2. **Matemática Transparente**: Em \`dice_roll\`, preencha os campos \`d20_result\`, \`modifier\` e \`proficiency\` corretamente.
+3. **Criação de Personagem**: No início, use \`interface.modo = "formulario"\` com os schemas apropriados.
 `;
 
 const INITIAL_BUTTONS: Option[] = [
@@ -199,13 +225,14 @@ const INITIAL_MESSAGE: Message = {
     role: 'model',
     text: "Bem-vindo a Karameikos. A névoa cobre as montanhas escarpadas ao norte, enquanto as tensões entre os nativos Traladaranos e os conquistadores Thyatianos fervem nas cidades. Você se encontra na estrada perto de Threshold. O vento uiva, carregando o cheiro de chuva e... algo mais metálico.\n\nAntes de começarmos, quem é você?",
     options: INITIAL_BUTTONS,
-    jsonData: {
+    gameResponse: {
+        narrative: "Bem-vindo a Karameikos...",
         status_jogador: { nome: "Desconhecido", titulo: "Aventureiro", hp_atual: 10, hp_max: 10, local: "Estrada de Threshold", missao: "Sobreviver", inventario: [] },
         interface: { modo: "botoes", permitir_input_livre: true, conteudo: INITIAL_BUTTONS }
     }
 }
 
-// --- Icons & Decoration Components ---
+// --- Components ---
 
 const CornerDecoration = ({ className }: { className: string }) => (
   <svg viewBox="0 0 50 50" className={`w-8 h-8 text-yellow-700/60 absolute ${className}`} fill="currentColor">
@@ -226,72 +253,110 @@ const DividerDecoration = () => (
   </div>
 );
 
-// --- NEW: EventCard Component (The "Juice") ---
-const EventCard = ({ event }: { event: UiEvent }) => {
-    // Styling configurations based on event type
-    let cardStyle = "border-stone-700 bg-stone-900/90";
-    let icon = "🎲";
-    let title = "Rolagem";
-    let valueColor = "text-stone-200";
-    let animation = "animate-fade-in";
+// --- VISUAL CARDS (UI/UX) ---
 
-    if (event.type === 'damage') {
-        cardStyle = "border-red-900/60 bg-gradient-to-br from-red-950/90 to-black";
+// 1. Dice Result Card (Detailed Math)
+const DiceResultCard = ({ data }: { data: DiceRollData }) => {
+  if (!data) return null;
+
+  const isCrit = data.is_critical;
+  const isFail = data.d20_result === 1;
+  
+  let borderColor = data.is_success ? 'border-green-500/50' : 'border-red-600/50';
+  let glowClass = '';
+  let textColor = data.is_success ? 'text-green-400' : 'text-red-400';
+
+  if (isCrit) {
+      borderColor = 'border-amber-400';
+      glowClass = 'shadow-[0_0_20px_rgba(251,191,36,0.2)] animate-pulse';
+      textColor = 'text-amber-400';
+  } else if (isFail) {
+      borderColor = 'border-stone-600';
+      glowClass = 'animate-shake grayscale';
+      textColor = 'text-stone-500';
+  }
+
+  return (
+    <div className={`relative w-full max-w-sm mx-auto my-4 bg-gray-900/90 backdrop-blur-sm rounded-lg border-2 ${borderColor} ${glowClass} p-4 animate-fade-in`}>
+      {/* Header */}
+      <div className="flex justify-between items-center mb-3 border-b border-gray-800 pb-2">
+        <span className="text-stone-400 text-xs font-bold uppercase tracking-widest">{data.roll_name}</span>
+        {isCrit && <span className="text-amber-400 text-xs font-bold">CRÍTICO!</span>}
+        {isFail && <span className="text-stone-500 text-xs font-bold">FALHA CRÍTICA</span>}
+      </div>
+
+      <div className="flex flex-col items-center">
+        {/* Visual Dice */}
+        <div className={`w-16 h-16 flex items-center justify-center rounded-full mb-2 shadow-inner border border-white/10 ${isCrit ? 'bg-amber-900/40' : 'bg-gray-800'}`}>
+          <span className={`text-3xl font-black ${isCrit ? 'text-amber-100' : 'text-white'}`}>{data.d20_result}</span>
+        </div>
+        
+        {/* Transparent Math */}
+        <div className="flex gap-2 text-xs md:text-sm text-stone-500 font-mono mb-1">
+           <span title="Dado">[{data.d20_result}]</span>
+           <span title="Modificador">+ {data.modifier}</span>
+           <span title="Proficiência">+ {data.proficiency}</span>
+        </div>
+
+        {/* Total */}
+        <div className={`text-2xl font-bold ${textColor} drop-shadow-md`}>
+          = {data.total_value}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 2. Generic Event Card (Items, Damage, etc)
+const GameEventCard = ({ event }: { event: GameEvent }) => {
+    if (!event || event.type === 'none') return null;
+
+    if (event.type === 'dice_roll') {
+        return <DiceResultCard data={event.data as DiceRollData} />;
+    }
+
+    // Styles for other events
+    let cardStyle = "border-stone-700 bg-stone-900/90";
+    let icon = "✨";
+    let title = "Evento";
+    let mainValue = "";
+    let subValue = "";
+
+    if (event.type === 'combat_hit') {
+        const data = event.data as CombatHitData;
+        cardStyle = "border-red-900/60 bg-gradient-to-br from-red-950/90 to-black animate-shake";
         icon = "⚔️";
         title = "Dano Recebido";
-        valueColor = "text-red-500";
-        animation = "animate-pulse"; // Heartbeat for damage
-    } else if (event.type === 'heal') {
-        cardStyle = "border-emerald-800/60 bg-gradient-to-br from-emerald-950/90 to-black";
-        icon = "🧪";
-        title = "Recuperação";
-        valueColor = "text-emerald-400";
-    } else if (event.type === 'item_get') {
-        cardStyle = "border-yellow-700/50 bg-gradient-to-br from-yellow-950/40 to-black";
+        mainValue = `-${data.damage}`;
+        subValue = `${data.damage_type} em ${data.target}`;
+    } else if (event.type === 'item_obtained') {
+        const data = event.data as ItemObtainedData;
+        cardStyle = "border-yellow-700/50 bg-gradient-to-br from-yellow-950/40 to-black animate-fade-in";
         icon = "🎒";
-        title = "Item Adquirido";
-        valueColor = "text-yellow-200";
-    } else if (event.type === 'dice_roll') {
-        if (event.is_critical) {
-            cardStyle = "border-yellow-400/80 bg-gradient-to-br from-yellow-900/50 to-black shadow-[0_0_15px_rgba(250,204,21,0.2)]";
-            icon = "🔥";
-            title = "Sucesso Crítico!";
-            valueColor = "text-yellow-400";
-            animation = "animate-bounce"; // Bounce for crit
-        } else if (event.is_failure) {
-            cardStyle = "border-stone-600 bg-gray-900 grayscale opacity-90";
-            icon = "💀";
-            title = "Falha Crítica";
-            valueColor = "text-stone-500";
-            animation = "shake"; // We'd add a shake keyframe normally, simulating with margin jitter
-        }
+        title = "Item Obtido";
+        mainValue = `${data.quantity}x ${data.item_name}`;
+        subValue = data.description;
     }
 
     return (
-        <div className={`mt-4 mx-auto max-w-sm rounded-lg border-2 p-4 flex items-center justify-between shadow-xl backdrop-blur-sm ${cardStyle} ${animation} transform transition-all hover:scale-105`}>
+        <div className={`mt-4 mx-auto max-w-sm rounded-lg border-2 p-4 flex items-center justify-between shadow-xl backdrop-blur-sm ${cardStyle}`}>
             <div className="flex flex-col">
                 <span className="text-[10px] uppercase tracking-widest font-bold opacity-70 mb-1 flex items-center gap-1">
                     {icon} {title}
                 </span>
                 <span className="text-xs text-stone-400 font-serif italic">
-                    {event.target ? `Alvo: ${event.target}` : event.detail}
+                    {subValue}
                 </span>
             </div>
-            
             <div className="flex flex-col items-end">
-                <span className={`text-3xl font-fantasy font-bold drop-shadow-md ${valueColor}`}>
-                    {event.value}
+                <span className="text-xl font-fantasy font-bold text-stone-200">
+                    {mainValue}
                 </span>
-                {/* Transparent Math for Dice Rolls */}
-                {event.type === 'dice_roll' && (
-                    <span className="text-[10px] text-stone-500 font-mono">
-                        {event.detail}
-                    </span>
-                )}
             </div>
         </div>
     );
 };
+
 
 // --- Audio Utils ---
 function decode(base64: string) {
@@ -302,6 +367,25 @@ function decode(base64: string) {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
 }
 
 // --- Fallback Schema (Security) ---
@@ -335,8 +419,7 @@ const DEFAULT_CHAR_SHEET: FormSchema = {
     ]
 };
 
-// --- Dynamic Form Component (Hardened) ---
-
+// --- Dynamic Form Component ---
 const DynamicForm = ({ 
     schema, 
     onSubmit,
@@ -349,28 +432,19 @@ const DynamicForm = ({
     const [formData, setFormData] = useState<Record<string, any>>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
 
-    // LÓGICA DE SEGURANÇA (FALLBACK)
-    // 1. Pega o schema da IA ou usa vazio
     let activeSchema = schema || {};
-    
-    // 2. Verifica se a IA mandou campos genéricos ("Campo 1", "Field 1") ou lista vazia
     const fields = Array.isArray(activeSchema.fields) ? activeSchema.fields : [];
     const hasGenericFields = fields.some((f: any) => f.label?.toLowerCase().includes("campo") || f.label?.toLowerCase().includes("field"));
     const isEmpty = fields.length === 0;
 
-    // 3. Se estiver quebrado, ATIVA O PLANO B (Ficha Padrão)
     if (isEmpty || hasGenericFields) {
         activeSchema = DEFAULT_CHAR_SHEET;
     }
     
-    // Garante que usamos os campos finais decididos acima
     const safeFields = activeSchema.fields;
-
-    // DETECTA SE É FORM DE ALOCAÇÃO DE ATRIBUTOS
     const isAttributeAllocation = activeSchema.titulo?.toLowerCase().includes("alocação") || 
                                   activeSchema.titulo?.toLowerCase().includes("atributos");
 
-    // Initialize Default Values if provided by Schema
     useEffect(() => {
         const defaults: Record<string, any> = {};
         safeFields.forEach((field: any) => {
@@ -399,34 +473,38 @@ const DynamicForm = ({
         });
     };
 
-    // --- Helper to Determine Placeholder & Style for Attributes ---
     const getAttributeConfig = (fieldId: string) => {
-        if (!isAttributeAllocation || !context?.userClass) return { placeholder: undefined, isPrimary: false };
+        if (!isAttributeAllocation || !context?.userClass) return { placeholder: undefined, isMain: false };
         
-        // Find matching class guide (simple string matching)
-        const classKey = Object.keys(CLASS_STATS_GUIDE).find(k => 
+        const classKey = Object.keys(CLASS_GUIDE).find(k => 
             context.userClass!.toLowerCase().includes(k)
         );
         
-        if (!classKey) return { placeholder: "Valor...", isPrimary: false };
+        if (!classKey) return { placeholder: "Valor...", isMain: false };
         
-        const guide = CLASS_STATS_GUIDE[classKey];
-        const isPrimary = guide.primary.includes(fieldId);
+        const guide = CLASS_GUIDE[classKey];
+        const isMain = guide.main.includes(fieldId);
         const isStandardArray = context.method?.toLowerCase().includes("padrão") || context.method?.toLowerCase().includes("standard");
 
         let placeholder = "Valor...";
+
         if (isStandardArray) {
             placeholder = `Sugerido: ${guide.optimal[fieldId] || "8"}`;
         } else {
-            placeholder = isPrimary ? "⭐ Principal (Max)" : "Secundário";
+            if (isMain) {
+                placeholder = "⭐ Atributo Principal (Prioridade Máxima)";
+            } else if (fieldId === "con") {
+                placeholder = "Recomendado para Vida";
+            } else {
+                placeholder = "Valor secundário";
+            }
         }
 
-        return { placeholder, isPrimary };
+        return { placeholder, isMain };
     };
 
     return (
         <div className="mt-8 mx-auto max-w-lg relative group animate-fade-in">
-             {/* Efeito de Borda Dourada */}
              <div className="absolute -inset-0.5 bg-gradient-to-b from-yellow-800 to-yellow-950 rounded-lg opacity-50 blur-[2px]"></div>
              
              <div className="relative bg-[#1a1816] border border-yellow-900/60 p-6 rounded-lg shadow-2xl">
@@ -436,7 +514,6 @@ const DynamicForm = ({
                      </h3>
                  </div>
 
-                 {/* STAT BANK HELPER FOR ALLOCATION */}
                  {isAttributeAllocation && (
                      <div className="mb-6 p-4 bg-stone-900/50 border border-stone-700 rounded-lg text-center animate-fade-in">
                          <span className="text-[10px] text-stone-500 uppercase tracking-[0.2em] block mb-2 font-bold">
@@ -458,13 +535,13 @@ const DynamicForm = ({
 
                  <form onSubmit={(e) => { e.preventDefault(); setIsSubmitting(true); onSubmit(formData); }} className="space-y-5">
                     {safeFields.map((field: any, idx: number) => {
-                        const { placeholder: smartPlaceholder, isPrimary } = getAttributeConfig(field.id);
+                        const { placeholder: smartPlaceholder, isMain } = getAttributeConfig(field.id);
                         
                         return (
                         <div key={field.id || idx} className="flex flex-col gap-2">
                             <label className="text-stone-400 text-xs font-bold uppercase tracking-widest flex justify-between items-center">
-                                <span className={isPrimary ? "text-yellow-500" : ""}>{field.label}</span>
-                                {isPrimary && <span className="text-[10px] text-yellow-600 ml-2">★ RECOMENDADO</span>}
+                                <span className={isMain ? "text-amber-500" : ""}>{field.label}</span>
+                                {isMain && <span className="text-[10px] text-amber-600 ml-2">★ RECOMENDADO</span>}
                                 {field.max_select && <span className="text-[10px] text-stone-600">(Max: {field.max_select})</span>}
                             </label>
                             
@@ -475,8 +552,8 @@ const DynamicForm = ({
                                     value={formData[field.id] || ''}
                                     onChange={(e) => handleInputChange(field.id, e.target.value)}
                                     className={`bg-black/30 border rounded p-3 text-stone-200 outline-none font-serif w-full placeholder-stone-600 focus:placeholder-stone-500/50
-                                        ${isPrimary 
-                                            ? 'border-yellow-700/60 ring-1 ring-yellow-900/30 focus:border-yellow-500' 
+                                        ${isMain 
+                                            ? 'border-amber-500 ring-1 ring-amber-500/50 bg-amber-900/10' 
                                             : 'border-stone-700 focus:border-yellow-700'}
                                     `}
                                 />
@@ -498,10 +575,8 @@ const DynamicForm = ({
                                 </div>
                             )}
 
-                            {/* DYNAMIC HELPERS FOR ATTRIBUTES (PASSO 1) */}
-                            {field.id === 'atributos' && formData[field.id] && (
+                             {field.id === 'atributos' && formData[field.id] && (
                                 <div className="animate-fade-in mt-3 space-y-3">
-                                    {/* Rolagem Helper */}
                                     {formData[field.id].toString().toLowerCase().includes('rolagem') && (
                                         <div className="p-3 bg-indigo-900/40 border border-indigo-500/30 rounded text-xs text-indigo-200 font-serif shadow-inner">
                                             <p className="font-bold text-indigo-100 mb-1 flex items-center gap-2">
@@ -511,7 +586,6 @@ const DynamicForm = ({
                                         </div>
                                     )}
                                     
-                                    {/* Point Buy Helper */}
                                     {formData[field.id].toString().toLowerCase().includes('compra') && (
                                         <div className="p-3 bg-emerald-900/40 border border-emerald-500/30 rounded text-xs text-emerald-200 font-serif shadow-inner">
                                             <p className="font-bold text-emerald-100 mb-2 flex items-center gap-2">
@@ -530,7 +604,6 @@ const DynamicForm = ({
                                         </div>
                                     )}
 
-                                     {/* Standard Array Helper */}
                                      {formData[field.id].toString().toLowerCase().includes('padrão') && (
                                         <div className="p-3 bg-stone-800/60 border border-stone-600/30 rounded text-xs text-stone-300 font-serif shadow-inner">
                                              <p className="font-bold text-stone-200 mb-1">Valores Fixos:</p>
@@ -586,12 +659,14 @@ const App = () => {
     const [inputText, setInputText] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [inputMode, setInputMode] = useState<"texto_livre" | "botoes" | "rolagem" | "formulario">("botoes");
-    const [allowFreeInput, setAllowFreeInput] = useState(true); // Default to true for initial screen
+    const [allowFreeInput, setAllowFreeInput] = useState(true); 
     const [currentOptions, setCurrentOptions] = useState<Option[]>(INITIAL_BUTTONS);
-    const [currentRollRequest, setCurrentRollRequest] = useState<RollRequest | null>(null);
     const [currentFormSchema, setCurrentFormSchema] = useState<FormSchema | null>(null);
     
-    // Track character creation context to provide hints in the second form
+    // Floating Text State (Damage/Heal numbers)
+    const [floatingTexts, setFloatingTexts] = useState<{id: number, text: string, color: string}[]>([]);
+    const prevHpRef = useRef(status.hp_atual);
+
     const [charCreationContext, setCharCreationContext] = useState<{userClass?: string, method?: string} | undefined>(undefined);
 
     // Audio State
@@ -611,6 +686,20 @@ const App = () => {
         scrollToBottom();
     }, [messages, inputMode, allowFreeInput]);
 
+    // Handle Floating Damage Text Logic
+    useEffect(() => {
+        const diff = status.hp_atual - prevHpRef.current;
+        if (diff !== 0) {
+             const id = Date.now();
+             const text = diff > 0 ? `+${diff}` : `${diff}`;
+             const color = diff > 0 ? 'text-green-400' : 'text-red-500';
+             setFloatingTexts(prev => [...prev, { id, text, color }]);
+             // Remove text after animation completes
+             setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== id)), 2000);
+        }
+        prevHpRef.current = status.hp_atual;
+    }, [status.hp_atual]);
+
     // Initialize Audio Context on user interaction (handled in toggle)
     useEffect(() => {
         if (gainNodeRef.current) {
@@ -622,7 +711,6 @@ const App = () => {
         if (!isAudioEnabled) return;
 
         try {
-            // Initialize AudioContext if not present (browsers require user interaction first)
             if (!audioContextRef.current) {
                 audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
                 gainNodeRef.current = audioContextRef.current.createGain();
@@ -637,26 +725,19 @@ const App = () => {
             setIsSpeaking(true);
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             
-            // Clean text for speech (remove JSON and maybe some markdown visual cues)
-            const cleanText = text
-                .split("--- [JSON_DATA] ---")[0] // Remove JSON
-                .replace(/\[🎲.*?\]/g, "") // Remove dice visuals ex: [🎲 d20(15)...]
-                .replace(/\*/g, "") // Remove asterisks
-                .trim();
-
-            if (!cleanText) {
+            if (!text) {
                 setIsSpeaking(false);
                 return;
             }
 
             const response = await ai.models.generateContent({
                 model: TTS_MODEL_NAME,
-                contents: [{ parts: [{ text: cleanText }] }],
+                contents: [{ parts: [{ text: text }] }],
                 config: {
                     responseModalities: ['AUDIO'],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: 'Fenrir' }, // "Fenrir" for deep DM voice
+                            prebuiltVoiceConfig: { voiceName: 'Fenrir' }, 
                         },
                     },
                 },
@@ -664,7 +745,12 @@ const App = () => {
 
             const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
             if (base64Audio && audioContextRef.current && gainNodeRef.current) {
-                const audioBuffer = await audioContextRef.current.decodeAudioData(decode(base64Audio).buffer);
+                const audioBuffer = await decodeAudioData(
+                    decode(base64Audio),
+                    audioContextRef.current,
+                    24000,
+                    1
+                );
                 const source = audioContextRef.current.createBufferSource();
                 source.buffer = audioBuffer;
                 source.connect(gainNodeRef.current);
@@ -679,29 +765,22 @@ const App = () => {
         }
     };
 
-    const handleSendMessage = async (text: string, isSystemRoll: boolean = false) => {
+    const handleSendMessage = async (text: string) => {
         if (!text || !text.trim()) return;
 
         const userMsg: Message = { id: Date.now().toString(), role: "user", text };
         setMessages(prev => [...prev, userMsg]);
         setInputText("");
         setIsLoading(true);
-        setInputMode("texto_livre"); // Reset momentarily while thinking
+        setInputMode("texto_livre"); 
 
         try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             
-            // Build history
             const history = messages.map(m => {
-               if (m.role === 'model') {
-                   // Strip JSON from history to save tokens and confusion, 
-                   // unless it's crucial context. Usually prompt is enough.
-                   return { role: m.role, parts: [{ text: m.text }] };
-               }
                return { role: m.role, parts: [{ text: m.text }] };
             });
 
-            // Add new message
             history.push({ role: "user", parts: [{ text: text }] });
 
             const response = await ai.models.generateContent({
@@ -709,83 +788,84 @@ const App = () => {
                 contents: history,
                 config: {
                     systemInstruction: SYSTEM_INSTRUCTION,
+                    responseMimeType: "application/json" // FORCE JSON RESPONSE
                 }
             });
 
-            const responseText = response.text || "";
+            const responseText = response.text || "{}";
             
-            // Parse Logic
-            const parts = responseText.split("--- [JSON_DATA] ---");
-            const narrative = parts[0].trim();
-            let jsonData: JsonData | null = null;
+            // --- STRICT JSON PARSING ---
+            let gameResponse: GameResponse | null = null;
+            let narrative = "O silêncio responde...";
+            
+            try {
+                // Try to clean markdown code blocks if present
+                const cleanJson = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+                gameResponse = JSON.parse(cleanJson) as GameResponse;
+                narrative = gameResponse.narrative || responseText;
+            } catch (e) {
+                console.error("JSON Parsing failed. Fallback to raw text.", e);
+                narrative = responseText;
+            }
+
+            // --- PROCESS GAME STATE ---
             let finalOptions: Option[] = [];
-            let finalRoll: RollRequest | null = null;
             let finalForm: FormSchema | null = null;
             let nextMode: "texto_livre" | "botoes" | "rolagem" | "formulario" = "texto_livre";
             let nextAllowInput = false;
             let imageUrl: string | undefined = undefined;
 
-            // Handle Scene generation hook
-            if (narrative.includes("--- [CENA VISUAL SUGERIDA] ---")) {
-                const scenePrompt = "Dark fantasy rpg landscape, " + narrative.substring(0, 100);
-                try {
-                    const imgRes = await ai.models.generateContent({
-                        model: IMAGE_MODEL_NAME,
-                        contents: { parts: [{ text: scenePrompt }] }
-                    });
-                     // Extract base64
-                    const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-                    if (part) {
-                        imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                    }
-                } catch (e) { console.error("Image gen failed", e); }
-            }
+            if (gameResponse) {
+                // Status Update
+                if (gameResponse.status_jogador) {
+                    setStatus(prev => ({ ...prev, ...gameResponse!.status_jogador }));
+                }
 
-            if (parts[1]) {
-                try {
-                    const cleanJson = parts[1].trim().replace(/```json/g, "").replace(/```/g, "");
-                    jsonData = JSON.parse(cleanJson);
+                // Visual Update
+                if (gameResponse.update_avatar?.trigger && gameResponse.update_avatar.visual_prompt) {
+                     const avatarPrompt = "Fantasy RPG Portrait, " + gameResponse.update_avatar.visual_prompt;
+                     try {
+                        const avatarRes = await ai.models.generateContent({
+                            model: IMAGE_MODEL_NAME,
+                            contents: { parts: [{ text: avatarPrompt }] }
+                        });
+                        const part = avatarRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+                        if (part) {
+                            setStatus(prev => ({ ...prev, avatarUrl: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` }));
+                        }
+                     } catch(e) { console.error("Avatar Gen Error", e); }
+                }
+
+                // Scene Visual Hook (Heuristic: triggers on new location or specific keywords)
+                if (gameResponse.narrative.length > 50 && Math.random() > 0.7) {
+                     const scenePrompt = "Dark fantasy rpg landscape, " + gameResponse.narrative.substring(0, 100);
+                     try {
+                        const imgRes = await ai.models.generateContent({
+                            model: IMAGE_MODEL_NAME,
+                            contents: { parts: [{ text: scenePrompt }] }
+                        });
+                        const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+                        if (part) {
+                            imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                        }
+                     } catch (e) { console.error("Scene Gen Error", e); }
+                }
+
+                // Interface Update
+                if (gameResponse.interface) {
+                    nextMode = gameResponse.interface.modo;
+                    nextAllowInput = !!gameResponse.interface.permitir_input_livre;
                     
-                    if (jsonData) {
-                        // Update Status
-                        if (jsonData.status_jogador) {
-                            setStatus(prev => ({ ...prev, ...jsonData!.status_jogador }));
+                    if (nextMode === 'botoes') {
+                        if (Array.isArray(gameResponse.interface.conteudo) && gameResponse.interface.conteudo.length > 0) {
+                            finalOptions = gameResponse.interface.conteudo as Option[];
+                        } else {
+                            finalOptions = [{ label: "Continuar", value: "Continuar" }];
                         }
-                        
-                        // Handle Avatar Update
-                        if (jsonData.update_avatar?.trigger && jsonData.update_avatar.visual_prompt) {
-                             const avatarPrompt = "Fantasy RPG Portrait, " + jsonData.update_avatar.visual_prompt;
-                             const avatarRes = await ai.models.generateContent({
-                                model: IMAGE_MODEL_NAME,
-                                contents: { parts: [{ text: avatarPrompt }] }
-                             });
-                             const part = avatarRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-                             if (part) {
-                                 setStatus(prev => ({ ...prev, avatarUrl: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` }));
-                             }
-                        }
-
-                        // Handle Interface
-                        if (jsonData.interface) {
-                            nextMode = jsonData.interface.modo;
-                            nextAllowInput = !!jsonData.interface.permitir_input_livre;
-                            
-                            if (nextMode === 'botoes') {
-                                if (Array.isArray(jsonData.interface.conteudo) && jsonData.interface.conteudo.length > 0) {
-                                    finalOptions = jsonData.interface.conteudo as Option[];
-                                } else {
-                                    // Fallback if AI requests buttons but sends empty list
-                                    finalOptions = [{ label: "Continuar", value: "Continuar" }];
-                                }
-                            } else if (nextMode === 'rolagem' && jsonData.interface.pedir_rolagem) {
-                                finalRoll = jsonData.interface.pedir_rolagem;
-                            } else if (nextMode === 'formulario' && jsonData.interface.conteudo) {
-                                finalForm = jsonData.interface.conteudo as FormSchema;
-                            }
-                        }
+                    } else if (nextMode === 'formulario' && gameResponse.interface.conteudo) {
+                        // Assuming the content passed for form is the schema
+                        finalForm = gameResponse.interface.conteudo as unknown as FormSchema;
                     }
-                } catch (e) {
-                    console.error("JSON Parse Error", e);
                 }
             }
 
@@ -793,7 +873,7 @@ const App = () => {
                 id: Date.now().toString(),
                 role: "model",
                 text: narrative,
-                jsonData: jsonData || undefined,
+                gameResponse: gameResponse || undefined,
                 options: finalOptions,
                 imageUrl: imageUrl,
                 form: finalForm || undefined
@@ -803,17 +883,14 @@ const App = () => {
             setInputMode(nextMode);
             setAllowFreeInput(nextAllowInput);
             
-            // Trigger TTS
             playTTS(narrative);
 
-            // Safety: If buttons are requested, ensure options exist. If not, clear them.
             if (nextMode === 'botoes') {
                 setCurrentOptions(finalOptions);
             } else {
                 setCurrentOptions([]);
             }
 
-            if (finalRoll) setCurrentRollRequest(finalRoll);
             if (finalForm) setCurrentFormSchema(finalForm);
 
 
@@ -831,12 +908,12 @@ const App = () => {
         }
     };
 
-    const handleRoll = (result: number, max: number) => {
-        handleSendMessage(`[SISTEMA: O Jogador rolou d${max} e obteve: ${result}]`, true);
+    // Generic handler that sends system notes
+    const handleSystemAction = (text: string) => {
+        handleSendMessage(text);
     };
 
     const handleFormSubmit = (values: Record<string, string | string[]>) => {
-        // Capture context if this is the character registration form
         if (values.classe && values.atributos) {
             setCharCreationContext({
                 userClass: values.classe as string,
@@ -845,10 +922,14 @@ const App = () => {
         }
         
         const valueString = JSON.stringify(values);
-        handleSendMessage(`[SISTEMA: Ficha preenchida: ${valueString}]`, true);
+        handleSendMessage(`[SISTEMA: Ficha preenchida: ${valueString}]`);
+    };
+    
+    // Logic for "Contextual Inventory" (Inspecting items triggers AI description)
+    const handleInspect = (item: string) => {
+        handleSendMessage(`[SISTEMA: O jogador examina o item "${item}". Descreva-o sensorialmente considerando o local atual.]`);
     };
 
-    // Helper to render the text input area to avoid duplication
     const renderInputArea = () => (
         <div className="flex gap-2 max-w-4xl mx-auto w-full">
             <input
@@ -881,6 +962,12 @@ const App = () => {
                          ) : (
                              <div className="w-full h-full flex items-center justify-center text-4xl text-stone-700">?</div>
                          )}
+                         {/* Floating Damage Text Overlay */}
+                         {floatingTexts.map(ft => (
+                             <div key={ft.id} className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-4xl font-bold font-fantasy drop-shadow-md pointer-events-none animate-float-up ${ft.color}`} style={{ textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
+                                 {ft.text}
+                             </div>
+                         ))}
                      </div>
                      <h2 className="font-fantasy text-xl text-yellow-600">{status.nome}</h2>
                      <span className="text-xs uppercase tracking-widest text-stone-500">{status.titulo}</span>
@@ -908,6 +995,27 @@ const App = () => {
                      <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
                          <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Missão</h4>
                          <p className="font-serif text-sm text-stone-300 italic">"{status.missao}"</p>
+                     </div>
+
+                     {/* INVENTORY SECTION */}
+                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
+                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2 flex justify-between">
+                            <span>Mochila</span>
+                            <span className="text-[10px] text-stone-600 font-normal normal-case italic">(Clique para examinar)</span>
+                         </h4>
+                         <div className="flex flex-wrap gap-2">
+                             {status.inventario?.map((item, i) => (
+                                 <button 
+                                    key={i} 
+                                    onClick={() => handleInspect(item)} 
+                                    className="text-xs bg-black/40 border border-stone-700 px-2 py-1 rounded text-stone-300 hover:border-yellow-700 hover:text-yellow-200 transition-all cursor-pointer" 
+                                    title="Inspecionar"
+                                 >
+                                     {item}
+                                 </button>
+                             ))}
+                             {(!status.inventario || status.inventario.length === 0) && <span className="text-xs text-stone-600 italic">Vazio</span>}
+                         </div>
                      </div>
 
                      <DividerDecoration />
@@ -960,16 +1068,16 @@ const App = () => {
                                          <img src={msg.imageUrl} alt="Scene" className="w-full h-auto max-h-[60vh] object-cover" />
                                          
                                          {/* Character Stats Overlay */}
-                                         {msg.jsonData?.status_jogador?.atributos && (
+                                         {msg.gameResponse?.status_jogador?.atributos && (
                                             <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center p-6 text-center backdrop-blur-[2px] transition-opacity duration-700 opacity-0 animate-fade-in group-hover:opacity-100">
                                                 <h3 className="font-fantasy text-2xl md:text-4xl text-yellow-500 mb-4 drop-shadow-lg border-b border-yellow-800/50 pb-2 w-full max-w-md">
-                                                    {msg.jsonData.status_jogador.nome}, {msg.jsonData.status_jogador.titulo.split("•")[1] || "Aventureiro"}
+                                                    {msg.gameResponse.status_jogador.nome}, {msg.gameResponse.status_jogador.titulo.split("•")[1] || "Aventureiro"}
                                                 </h3>
                                                 <p className="text-stone-300 font-serif italic mb-6 text-sm md:text-base">
                                                     "Seus atributos foram definidos pelo destino."
                                                 </p>
                                                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 w-full max-w-lg">
-                                                    {Object.entries(msg.jsonData.status_jogador.atributos).map(([key, val]) => (
+                                                    {Object.entries(msg.gameResponse.status_jogador.atributos).map(([key, val]) => (
                                                         <div key={key} className="bg-stone-900/80 p-2 md:p-3 rounded border border-yellow-900/40 shadow-lg backdrop-blur-sm">
                                                             <div className="text-yellow-700 text-[10px] md:text-xs uppercase tracking-[0.2em] font-bold mb-1">{key}</div>
                                                             <div className="text-stone-100 font-serif text-lg md:text-xl font-bold">{val}</div>
@@ -984,9 +1092,9 @@ const App = () => {
                                      <ReactMarkdown>{msg.text}</ReactMarkdown>
                                  </div>
 
-                                 {/* --- NEW: VISUAL EVENT CARD --- */}
-                                 {msg.role === 'model' && msg.jsonData?.ui_event && (
-                                     <EventCard event={msg.jsonData.ui_event} />
+                                 {/* --- GAME ENGINE VISUAL EVENTS --- */}
+                                 {msg.role === 'model' && msg.gameResponse?.game_event && (
+                                     <GameEventCard event={msg.gameResponse.game_event} />
                                  )}
                                  
                                  {/* Render Form if present in this message and it's the latest */}
@@ -1012,19 +1120,13 @@ const App = () => {
 
                 {/* Input Area */}
                 <div className="p-4 bg-[#141210] border-t border-[#3e352f]">
-                    {inputMode === 'rolagem' && currentRollRequest ? (
-                         <div className="flex flex-col items-center gap-4 py-4 animate-fade-in">
-                             <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center">
-                                 {currentRollRequest.motivo}
-                             </div>
-                             <button 
-                                onClick={() => handleRoll(Math.floor(Math.random() * 20) + 1, 20)}
-                                className="w-24 h-24 bg-cover bg-center flex items-center justify-center text-3xl font-bold text-white shadow-lg hover:scale-110 transition-transform cursor-pointer rounded-full border-4 border-yellow-800 bg-stone-800"
-                             >
-                                🎲 d20
-                             </button>
-                             <p className="text-stone-500 text-xs">Clique para rolar</p>
-                         </div>
+                    {inputMode === 'rolagem' ? (
+                        <div className="flex flex-col items-center gap-4 py-4 animate-fade-in">
+                            <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center">
+                                Rolagem Necessária
+                            </div>
+                             {/* Auto-roll handled by engine mostly, but kept for manual overrides if needed */}
+                        </div>
                     ) : inputMode === 'botoes' ? (
                         <div className="flex flex-col gap-4 w-full">
                             <div className="flex flex-wrap gap-2 justify-center animate-fade-in">
