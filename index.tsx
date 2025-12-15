@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Modality } from "@google/genai";
 import ReactMarkdown from "react-markdown";
 
 // --- Types ---
@@ -91,6 +91,7 @@ interface GameResponse {
     titulo: string;
     hp_atual: number;
     hp_max: number;
+    armor_class?: number; // Added Armor Class
     local: string;
     missao?: string;
     inventario?: string[];
@@ -122,6 +123,7 @@ interface GameStatus {
   titulo: string;
   hp_atual: number;
   hp_max: number;
+  armor_class?: number; // Added Armor Class
   local: string;
   missao: string;
   avatarUrl?: string;
@@ -202,7 +204,8 @@ Você deve SEMPRE responder com um objeto JSON válido. NUNCA envie texto solto 
       "nome": "Voron", 
       "titulo": "Guerreiro Nível 1",
       "hp_atual": 10, 
-      "hp_max": 10, 
+      "hp_max": 10,
+      "armor_class": 16,
       "local": "Estrada de Threshold",
       "missao": "Sobreviver",
       "inventario": ["Corda", "Tocha"],
@@ -220,9 +223,9 @@ Você deve SEMPRE responder com um objeto JSON válido. NUNCA envie texto solto 
   "quick_actions": ["Olhar ao redor", "Checar inventário", "Falar com NPC"], // NEW: 3-5 ações curtas contextuais
 
   "update_avatar": {
-      "trigger": false, // True apenas se a aparência do personagem mudou drasticamente ou é o início
-      "visual_prompt": "Prompt visual para gerar o retrato", 
-      "style": "Dark Fantasy RPG Art"
+      "trigger": false, 
+      "visual_prompt": "Descrição VISUAL focada em UM ÚNICO personagem (se for retrato). Ex: 'Solo portrait of a grim human warrior, detailed face, dark fantasy oil painting style'. NÃO descreva grupos a menos que explicitamente solicitado.", 
+      "style": "Dark Fantasy RPG Art, Solo Character Portrait, Oil Painting style"
   },
 
   "interface": {
@@ -240,7 +243,8 @@ Você deve SEMPRE responder com um objeto JSON válido. NUNCA envie texto solto 
 **DIRETRIZES DE MESTRAGEM:**
 1. **Juice & Feel**: Quando o jogador fizer uma ação que exija teste, GERE o teste você mesmo e retorne o resultado em \`game_event\`. Não peça para o jogador rolar se você pode simular a rolagem para dar agilidade.
 2. **Matemática Transparente**: Em \`dice_roll\`, preencha os campos \`d20_result\`, \`modifier\` e \`proficiency\` corretamente.
-3. **Criação de Personagem**: No início, use \`interface.modo = "formulario"\` com os schemas apropriados.
+3. **Criação de Personagem**: No início, use \`interface.modo = "formulario"\`.
+4. **Atributos**: Se o jogador escolher 'Rolagem', GERE os valores (4d6 drop lowest), ALOQUE-OS otimizadamente para a classe escolhida e NARRE o resultado. Se escolher 'Padrão' ou 'Compra', respeite os valores enviados.
 `;
 
 const INITIAL_BUTTONS: Option[] = [
@@ -257,7 +261,7 @@ const INITIAL_MESSAGE: Message = {
     options: INITIAL_BUTTONS,
     gameResponse: {
         narrative: "Bem-vindo a Karameikos...",
-        status_jogador: { nome: "Desconhecido", titulo: "Aventureiro", hp_atual: 10, hp_max: 10, local: "Estrada de Threshold", missao: "Sobreviver", inventario: [] },
+        status_jogador: { nome: "Desconhecido", titulo: "Aventureiro", hp_atual: 10, hp_max: 10, armor_class: 10, local: "Estrada de Threshold", missao: "Sobreviver", inventario: [] },
         interface: { modo: "botoes", permitir_input_livre: true, conteudo: INITIAL_BUTTONS }
     }
 }
@@ -556,17 +560,24 @@ const DEFAULT_CHAR_SHEET: FormSchema = {
             options: ["Guerreiro (Soldado)", "Ladino (Criminoso)", "Mago (Erudito)", "Clérigo (Acólito)", "Patrulheiro (Caçador)"] 
         },
         { 
+            id: "origem", 
+            type: "radio", 
+            label: "Origem Regional", 
+            options: ["Nativo de Karameikos", "Invasor Thyatiano", "Elfo de Alfheim", "Anão de Rockhome"] 
+        },
+        { 
             id: "atributos", 
             type: "select", 
             label: "Método de Atributos", 
             options: ["Arranjo Padrão (15, 14, 13, 12, 10, 8)", "Rolagem de Dados (4d6 drop lowest)", "Compra de Pontos (27 pts)"] 
         },
-        { 
-            id: "origem", 
-            type: "radio", 
-            label: "Origem Regional", 
-            options: ["Nativo de Karameikos", "Invasor Thyatiano", "Elfo de Alfheim", "Anão de Rockhome"] 
-        }
+        // Explicitly adding attribute fields for DynamicForm logic
+        { id: "for", type: "text", label: "Força", placeholder: "0" },
+        { id: "des", type: "text", label: "Destreza", placeholder: "0" },
+        { id: "con", type: "text", label: "Constituição", placeholder: "0" },
+        { id: "int", type: "text", label: "Inteligência", placeholder: "0" },
+        { id: "sab", type: "text", label: "Sabedoria", placeholder: "0" },
+        { id: "car", type: "text", label: "Carisma", placeholder: "0" },
     ]
 };
 
@@ -582,6 +593,7 @@ const DynamicForm = ({
 }) => {
     const [formData, setFormData] = useState<Record<string, any>>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [pointsUsed, setPointsUsed] = useState(0);
 
     let activeSchema = schema || {};
     const fields = Array.isArray(activeSchema.fields) ? activeSchema.fields : [];
@@ -594,7 +606,30 @@ const DynamicForm = ({
     
     const safeFields = activeSchema.fields;
     const isAttributeAllocation = activeSchema.titulo?.toLowerCase().includes("alocação") || 
-                                  activeSchema.titulo?.toLowerCase().includes("atributos");
+                                  activeSchema.titulo?.toLowerCase().includes("atributos") ||
+                                  activeSchema.titulo === "Registro de Aventureiro";
+
+    // Logic to detect method
+    const attributeMethod = formData['atributos'] ? formData['atributos'].toString() : "";
+    const isRolling = attributeMethod.toLowerCase().includes('rolagem');
+    const isPointBuy = attributeMethod.toLowerCase().includes('compra');
+    const isStandard = attributeMethod.toLowerCase().includes('padrão');
+
+    const STAT_IDS = ['for', 'des', 'con', 'int', 'sab', 'car'];
+
+    // Point Buy Calculation Helper
+    const getPointCost = (val: number) => {
+        if (val < 8) return 0;
+        if (val === 8) return 0;
+        if (val === 9) return 1;
+        if (val === 10) return 2;
+        if (val === 11) return 3;
+        if (val === 12) return 4;
+        if (val === 13) return 5;
+        if (val === 14) return 7;
+        if (val === 15) return 9;
+        return 999; // Invalid for 5e point buy
+    };
 
     useEffect(() => {
         const defaults: Record<string, any> = {};
@@ -608,7 +643,35 @@ const DynamicForm = ({
         }
     }, [activeSchema]);
 
+    // Recalculate Points when formData changes
+    useEffect(() => {
+        if (isPointBuy) {
+            let total = 0;
+            STAT_IDS.forEach(stat => {
+                const val = parseInt(formData[stat] || "8");
+                if (!isNaN(val)) {
+                    total += getPointCost(val);
+                }
+            });
+            setPointsUsed(total);
+        }
+    }, [formData, isPointBuy]);
+
     const handleInputChange = (id: string, value: string) => {
+        // Enforce numeric limits for stats if in Point Buy or Standard
+        if (STAT_IDS.includes(id) && (isPointBuy || isStandard)) {
+             // Allow empty for typing
+             if (value === "") {
+                 setFormData(prev => ({ ...prev, [id]: value }));
+                 return;
+             }
+             const num = parseInt(value);
+             if (isNaN(num)) return;
+             if (isPointBuy && (num < 8 || num > 15)) {
+                 // Soft limit visual feedback could be improved, but strict clamping here for simplicity
+                 // Or better, let them type but show error visually. Let's just update for now.
+             }
+        }
         setFormData(prev => ({ ...prev, [id]: value }));
     };
 
@@ -625,29 +688,28 @@ const DynamicForm = ({
     };
 
     const getAttributeConfig = (fieldId: string) => {
-        if (!isAttributeAllocation || !context?.userClass) return { placeholder: undefined, isMain: false };
+        if (!isAttributeAllocation || !formData.classe) return { placeholder: undefined, isMain: false };
         
         const classKey = Object.keys(CLASS_GUIDE).find(k => 
-            context.userClass!.toLowerCase().includes(k)
+            formData.classe.toLowerCase().includes(k)
         );
         
         if (!classKey) return { placeholder: "Valor...", isMain: false };
         
         const guide = CLASS_GUIDE[classKey];
         const isMain = guide.main.includes(fieldId);
-        const isStandardArray = context.method?.toLowerCase().includes("padrão") || context.method?.toLowerCase().includes("standard");
 
-        let placeholder = "Valor...";
+        let placeholder = "8";
 
-        if (isStandardArray) {
-            placeholder = `Sugerido: ${guide.optimal[fieldId] || "8"}`;
+        if (isStandard) {
+            placeholder = `Sug: ${guide.optimal[fieldId] || "8"}`;
+        } else if (isRolling) {
+            placeholder = "";
+        } else if (isPointBuy) {
+            placeholder = "8";
         } else {
             if (isMain) {
-                placeholder = "⭐ Atributo Principal (Prioridade Máxima)";
-            } else if (fieldId === "con") {
-                placeholder = "Recomendado para Vida";
-            } else {
-                placeholder = "Valor secundário";
+                placeholder = "⭐ Principal";
             }
         }
 
@@ -666,48 +728,112 @@ const DynamicForm = ({
                  </div>
 
                  {isAttributeAllocation && (
-                     <div className="mb-6 p-4 bg-stone-900/50 border border-stone-700 rounded-lg text-center animate-fade-in">
-                         <span className="text-[10px] text-stone-500 uppercase tracking-[0.2em] block mb-2 font-bold">
-                             Banco de Valores (Arranjo Padrão)
-                         </span>
-                         <div className="flex justify-center gap-3 font-fantasy text-lg md:text-xl text-yellow-500">
-                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">15</span>
-                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">14</span>
-                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">13</span>
-                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">12</span>
-                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30">10</span>
-                             <span className="bg-black/40 px-2 rounded border border-yellow-900/30 text-stone-500">8</span>
-                         </div>
-                         <p className="text-xs text-stone-600 mt-2 italic font-serif">
-                             Distribua estes valores nos campos abaixo conforme sua estratégia.
-                         </p>
+                     <div className="mb-6">
+                        {isStandard && (
+                             <div className="p-4 bg-stone-900/50 border border-stone-700 rounded-lg text-center animate-fade-in">
+                                <span className="text-[10px] text-stone-500 uppercase tracking-[0.2em] block mb-2 font-bold">
+                                    Banco de Valores (Arranjo Padrão)
+                                </span>
+                                <div className="flex justify-center gap-2 font-fantasy text-lg text-yellow-500">
+                                    {[15, 14, 13, 12, 10, 8].map(n => (
+                                        <span key={n} className="bg-black/40 px-2 rounded border border-yellow-900/30">{n}</span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {isRolling && (
+                             <div className="p-4 bg-indigo-900/30 border border-indigo-500/50 rounded-lg text-center animate-pulse flex flex-col items-center">
+                                <div className="text-3xl mb-2">🎲</div>
+                                <span className="text-xs text-indigo-300 uppercase tracking-widest font-bold block mb-1">
+                                    O Mestre Rola os Dados
+                                </span>
+                                <p className="text-xs text-indigo-200/80 font-serif italic">
+                                    Ao confirmar, a IA rolará 4d6 (descarta o menor) para cada atributo.
+                                </p>
+                            </div>
+                        )}
+                        {isPointBuy && (
+                            <div className="flex flex-col gap-3">
+                                <div className={`p-3 border rounded-lg transition-colors ${pointsUsed > 27 ? 'bg-red-900/20 border-red-500/50' : 'bg-emerald-900/30 border-emerald-500/50'}`}>
+                                     <div className="flex justify-between items-end mb-1">
+                                        <span className="text-[10px] uppercase tracking-widest font-bold text-stone-400">Pontos Usados</span>
+                                        <span className={`text-xl font-bold font-mono ${pointsUsed > 27 ? 'text-red-400' : 'text-emerald-400'}`}>
+                                            {pointsUsed} / 27
+                                        </span>
+                                     </div>
+                                     <div className="h-1.5 bg-black rounded-full overflow-hidden">
+                                         <div 
+                                            className={`h-full transition-all duration-300 ${pointsUsed > 27 ? 'bg-red-500' : 'bg-emerald-500'}`} 
+                                            style={{ width: `${Math.min((pointsUsed / 27) * 100, 100)}%` }}
+                                         ></div>
+                                     </div>
+                                </div>
+                                
+                                <div className="grid grid-cols-8 gap-1 text-center">
+                                     {[[8,0],[9,1],[10,2],[11,3],[12,4],[13,5],[14,7],[15,9]].map(([val, cost]) => (
+                                         <div key={val} className="flex flex-col bg-black/40 rounded border border-emerald-500/10 p-1 text-[8px] md:text-[10px]">
+                                             <span className="text-stone-300 font-bold">{val}</span>
+                                             <span className="text-emerald-500/80">{cost}pt</span>
+                                         </div>
+                                     ))}
+                                </div>
+                            </div>
+                        )}
                      </div>
                  )}
 
-                 <form onSubmit={(e) => { e.preventDefault(); setIsSubmitting(true); onSubmit(formData); }} className="space-y-5">
+                 <form onSubmit={(e) => { e.preventDefault(); setIsSubmitting(true); onSubmit(formData); }} className="space-y-4">
                     {safeFields.map((field: any, idx: number) => {
+                        const isStat = STAT_IDS.includes(field.id);
                         const { placeholder: smartPlaceholder, isMain } = getAttributeConfig(field.id);
                         
+                        // --- Custom Render for Rolagem (Visual Slots instead of inputs) ---
+                        if (isStat && isRolling) {
+                            return (
+                                <div key={field.id} className="md:col-span-1 bg-black/30 border border-indigo-900/30 rounded p-3 flex justify-between items-center opacity-70">
+                                    <label className="text-indigo-300 text-xs font-bold uppercase tracking-widest">
+                                        {field.label} {isMain && <span className="text-[9px] text-amber-500 ml-1">★</span>}
+                                    </label>
+                                    <div className="text-indigo-500 font-fantasy text-lg animate-pulse">?</div>
+                                </div>
+                            );
+                        }
+
+                        // Standard Input Logic
+                        let inputStyle = `bg-black/30 border rounded p-3 text-stone-200 outline-none font-serif w-full placeholder-stone-600 focus:placeholder-stone-500/50 
+                            ${isMain ? 'border-amber-500 ring-1 ring-amber-500/50 bg-amber-900/10' : 'border-stone-700 focus:border-yellow-700'}`;
+                        
+                        if (isStat && isPointBuy) {
+                            const val = parseInt(formData[field.id] || "8");
+                            const invalid = val < 8 || val > 15;
+                            if (invalid) inputStyle = inputStyle.replace('border-stone-700', 'border-red-500 text-red-200');
+                        }
+
                         return (
-                        <div key={field.id || idx} className="flex flex-col gap-2">
+                        <div key={field.id || idx} className={`flex flex-col gap-1 ${isStat ? 'md:col-span-1' : 'col-span-2'}`}>
                             <label className="text-stone-400 text-xs font-bold uppercase tracking-widest flex justify-between items-center">
                                 <span className={isMain ? "text-amber-500" : ""}>{field.label}</span>
-                                {isMain && <span className="text-[10px] text-amber-600 ml-2">★ RECOMENDADO</span>}
-                                {field.max_select && <span className="text-[10px] text-stone-600">(Max: {field.max_select})</span>}
+                                {isMain && <span className="text-[9px] text-amber-600">★</span>}
+                                {field.max_select && <span className="text-[9px] text-stone-600">(Max: {field.max_select})</span>}
                             </label>
                             
                             {field.type === 'text' && (
-                                <input 
-                                    type="text"
-                                    placeholder={smartPlaceholder || field.placeholder}
-                                    value={formData[field.id] || ''}
-                                    onChange={(e) => handleInputChange(field.id, e.target.value)}
-                                    className={`bg-black/30 border rounded p-3 text-stone-200 outline-none font-serif w-full placeholder-stone-600 focus:placeholder-stone-500/50
-                                        ${isMain 
-                                            ? 'border-amber-500 ring-1 ring-amber-500/50 bg-amber-900/10' 
-                                            : 'border-stone-700 focus:border-yellow-700'}
-                                    `}
-                                />
+                                <div className="relative">
+                                    <input 
+                                        type={isStat && (isPointBuy || isStandard) ? "number" : "text"}
+                                        min={isPointBuy ? "8" : undefined}
+                                        max={isPointBuy ? "15" : undefined}
+                                        placeholder={smartPlaceholder || field.placeholder}
+                                        value={formData[field.id] || ''}
+                                        onChange={(e) => handleInputChange(field.id, e.target.value)}
+                                        className={inputStyle}
+                                    />
+                                    {isStat && isPointBuy && (
+                                        <div className="absolute right-2 top-3 text-[10px] text-stone-500 pointer-events-none font-mono">
+                                            -{getPointCost(parseInt(formData[field.id] || "8"))}pts
+                                        </div>
+                                    )}
+                                </div>
                             )}
 
                             {field.type === 'select' && (
@@ -723,44 +849,6 @@ const DynamicForm = ({
                                         ))}
                                      </select>
                                      <div className="absolute right-3 top-3.5 text-stone-500 pointer-events-none text-xs">▼</div>
-                                </div>
-                            )}
-
-                             {field.id === 'atributos' && formData[field.id] && (
-                                <div className="animate-fade-in mt-3 space-y-3">
-                                    {formData[field.id].toString().toLowerCase().includes('rolagem') && (
-                                        <div className="p-3 bg-indigo-900/40 border border-indigo-500/30 rounded text-xs text-indigo-200 font-serif shadow-inner">
-                                            <p className="font-bold text-indigo-100 mb-1 flex items-center gap-2">
-                                                <span className="text-lg">🎲</span> O Destino Decide
-                                            </p>
-                                            <p>Ao confirmar, o Mestre rolará 4d6 (descartando o menor) 6 vezes para você.</p>
-                                        </div>
-                                    )}
-                                    
-                                    {formData[field.id].toString().toLowerCase().includes('compra') && (
-                                        <div className="p-3 bg-emerald-900/40 border border-emerald-500/30 rounded text-xs text-emerald-200 font-serif shadow-inner">
-                                            <p className="font-bold text-emerald-100 mb-2 flex items-center gap-2">
-                                                <span className="text-lg">⚖️</span> Compra de Pontos (Total: 27)
-                                            </p>
-                                            <div className="grid grid-cols-4 gap-2 text-center opacity-90">
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">8 = 0</div>
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">9 = 1</div>
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">10 = 2</div>
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">11 = 3</div>
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">12 = 4</div>
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">13 = 5</div>
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">14 = 7</div>
-                                                <div className="bg-black/20 p-1 rounded border border-emerald-500/20">15 = 9</div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                     {formData[field.id].toString().toLowerCase().includes('padrão') && (
-                                        <div className="p-3 bg-stone-800/60 border border-stone-600/30 rounded text-xs text-stone-300 font-serif shadow-inner">
-                                             <p className="font-bold text-stone-200 mb-1">Valores Fixos:</p>
-                                             <p className="tracking-widest">15, 14, 13, 12, 10, 8</p>
-                                        </div>
-                                    )}
                                 </div>
                             )}
 
@@ -789,10 +877,15 @@ const DynamicForm = ({
 
                     <button 
                         type="submit"
-                        disabled={isSubmitting}
-                        className="w-full mt-6 bg-gradient-to-r from-yellow-900 to-yellow-800 hover:from-yellow-800 hover:to-yellow-700 text-stone-200 font-bold py-3 rounded border border-yellow-700/50 uppercase tracking-widest shadow-lg transition-all"
+                        disabled={isSubmitting || (isPointBuy && pointsUsed > 27)}
+                        className={`
+                            w-full mt-6 font-bold py-3 rounded uppercase tracking-widest shadow-lg transition-all border
+                            ${(isPointBuy && pointsUsed > 27) 
+                                ? 'bg-red-900/20 border-red-800 text-red-500 cursor-not-allowed opacity-50'
+                                : 'bg-gradient-to-r from-yellow-900 to-yellow-800 hover:from-yellow-800 hover:to-yellow-700 text-stone-200 border-yellow-700/50'}
+                        `}
                     >
-                        {isSubmitting ? "Gravando..." : "Confirmar Destino"}
+                        {isSubmitting ? "Gravando..." : (isPointBuy && pointsUsed > 27 ? `Excesso de Pontos (${pointsUsed-27})` : "Confirmar Destino")}
                     </button>
                  </form>
              </div>
@@ -803,540 +896,3 @@ const DynamicForm = ({
 // --- Main App Component ---
 
 const App = () => {
-    const [messages, setMessages] = useState<Message[]>([INITIAL_MESSAGE]);
-    const [status, setStatus] = useState<GameStatus>({
-        nome: "Desconhecido", titulo: "Aventureiro", hp_atual: 10, hp_max: 10, local: "Estrada de Threshold", missao: "Sobreviver", inventario: [], atributos: undefined
-    });
-    const [inputText, setInputText] = useState("");
-    const [isLoading, setIsLoading] = useState(false);
-    const [inputMode, setInputMode] = useState<"texto_livre" | "botoes" | "rolagem" | "formulario">("botoes");
-    const [allowFreeInput, setAllowFreeInput] = useState(true); 
-    const [currentOptions, setCurrentOptions] = useState<Option[]>(INITIAL_BUTTONS);
-    const [currentFormSchema, setCurrentFormSchema] = useState<FormSchema | null>(null);
-    const [lootNotification, setLootNotification] = useState<ItemObtainedData | null>(null);
-    const [quickActions, setQuickActions] = useState<string[]>([]);
-    
-    // Floating Text State (Damage/Heal numbers)
-    const [floatingTexts, setFloatingTexts] = useState<{id: number, text: string, color: string}[]>([]);
-    const prevHpRef = useRef(status.hp_atual);
-
-    const [charCreationContext, setCharCreationContext] = useState<{userClass?: string, method?: string} | undefined>(undefined);
-
-    // Audio State
-    const [isAudioEnabled, setIsAudioEnabled] = useState(false);
-    const [volume, setVolume] = useState(1.0);
-    const [isSpeaking, setIsSpeaking] = useState(false);
-    const audioContextRef = useRef<AudioContext | null>(null);
-    const gainNodeRef = useRef<GainNode | null>(null);
-
-    const messagesEndRef = useRef<HTMLDivElement>(null);
-
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-
-    useEffect(() => {
-        scrollToBottom();
-    }, [messages, inputMode, allowFreeInput]);
-
-    // Handle Floating Damage Text Logic
-    useEffect(() => {
-        const diff = status.hp_atual - prevHpRef.current;
-        if (diff !== 0) {
-             const id = Date.now();
-             const text = diff > 0 ? `+${diff}` : `${diff}`;
-             const color = diff > 0 ? 'text-green-400' : 'text-red-500';
-             setFloatingTexts(prev => [...prev, { id, text, color }]);
-             // Remove text after animation completes
-             setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== id)), 2000);
-        }
-        prevHpRef.current = status.hp_atual;
-    }, [status.hp_atual]);
-
-    // Initialize Audio Context on user interaction (handled in toggle)
-    useEffect(() => {
-        if (gainNodeRef.current) {
-            gainNodeRef.current.gain.value = volume;
-        }
-    }, [volume]);
-
-    const playTTS = async (text: string) => {
-        if (!isAudioEnabled) return;
-
-        try {
-            if (!audioContextRef.current) {
-                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-                gainNodeRef.current = audioContextRef.current.createGain();
-                gainNodeRef.current.connect(audioContextRef.current.destination);
-                gainNodeRef.current.gain.value = volume;
-            }
-
-            if (audioContextRef.current.state === 'suspended') {
-                await audioContextRef.current.resume();
-            }
-
-            setIsSpeaking(true);
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            
-            if (!text) {
-                setIsSpeaking(false);
-                return;
-            }
-
-            const response = await ai.models.generateContent({
-                model: TTS_MODEL_NAME,
-                contents: [{ parts: [{ text: text }] }],
-                config: {
-                    responseModalities: ['AUDIO'],
-                    speechConfig: {
-                        voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: 'Fenrir' }, 
-                        },
-                    },
-                },
-            });
-
-            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (base64Audio && audioContextRef.current && gainNodeRef.current) {
-                const audioBuffer = await decodePCM(
-                    decode(base64Audio),
-                    audioContextRef.current,
-                    24000,
-                    1
-                );
-                const source = audioContextRef.current.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(gainNodeRef.current);
-                source.start();
-                source.onended = () => setIsSpeaking(false);
-            } else {
-                setIsSpeaking(false);
-            }
-        } catch (error) {
-            console.error("TTS Error:", error);
-            setIsSpeaking(false);
-        }
-    };
-
-    const handleSendMessage = async (text: string) => {
-        if (!text || !text.trim()) return;
-
-        const userMsg: Message = { id: Date.now().toString(), role: "user", text };
-        setMessages(prev => [...prev, userMsg]);
-        setInputText("");
-        setIsLoading(true);
-        setInputMode("texto_livre"); 
-
-        try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            
-            const history = messages.map(m => {
-               return { role: m.role, parts: [{ text: m.text }] };
-            });
-
-            history.push({ role: "user", parts: [{ text: text }] });
-
-            const response = await ai.models.generateContent({
-                model: MODEL_NAME,
-                contents: history,
-                config: {
-                    systemInstruction: SYSTEM_INSTRUCTION,
-                    responseMimeType: "application/json" // FORCE JSON RESPONSE
-                }
-            });
-
-            const responseText = response.text || "{}";
-            
-            // --- STRICT JSON PARSING ---
-            let gameResponse: GameResponse | null = null;
-            let narrative = "O silêncio responde...";
-            
-            try {
-                // Try to clean markdown code blocks if present
-                const cleanJson = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
-                gameResponse = JSON.parse(cleanJson) as GameResponse;
-                narrative = gameResponse.narrative || responseText;
-            } catch (e) {
-                console.error("JSON Parsing failed. Fallback to raw text.", e);
-                narrative = responseText;
-            }
-
-            // --- PROCESS GAME STATE ---
-            let finalOptions: Option[] = [];
-            let finalForm: FormSchema | null = null;
-            let nextMode: "texto_livre" | "botoes" | "rolagem" | "formulario" = "texto_livre";
-            let nextAllowInput = false;
-            let imageUrl: string | undefined = undefined;
-
-            if (gameResponse) {
-                // Status Update
-                if (gameResponse.status_jogador) {
-                    setStatus(prev => ({ 
-                        ...prev, 
-                        ...gameResponse!.status_jogador, 
-                        combat: gameResponse!.combat_state 
-                    }));
-                } else if (gameResponse.combat_state) {
-                    setStatus(prev => ({ ...prev, combat: gameResponse!.combat_state }));
-                }
-
-                // Loot Notification Trigger
-                if (gameResponse.game_event?.type === 'item_obtained') {
-                    setLootNotification(gameResponse.game_event.data as ItemObtainedData);
-                    // Dismiss after 4 seconds
-                    setTimeout(() => setLootNotification(null), 4000);
-                }
-                
-                // Quick Actions Update
-                if (gameResponse.quick_actions) {
-                    setQuickActions(gameResponse.quick_actions);
-                } else {
-                    setQuickActions([]);
-                }
-
-                // Visual Update
-                if (gameResponse.update_avatar?.trigger && gameResponse.update_avatar.visual_prompt) {
-                     const avatarPrompt = "Fantasy RPG Portrait, " + gameResponse.update_avatar.visual_prompt;
-                     try {
-                        const avatarRes = await ai.models.generateContent({
-                            model: IMAGE_MODEL_NAME,
-                            contents: { parts: [{ text: avatarPrompt }] }
-                        });
-                        const part = avatarRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-                        if (part) {
-                            setStatus(prev => ({ ...prev, avatarUrl: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` }));
-                        }
-                     } catch(e) { console.error("Avatar Gen Error", e); }
-                }
-
-                // Scene Visual Hook (Heuristic: triggers on new location or specific keywords)
-                if (gameResponse.narrative.length > 50 && Math.random() > 0.7) {
-                     const scenePrompt = "Dark fantasy rpg landscape, " + gameResponse.narrative.substring(0, 100);
-                     try {
-                        const imgRes = await ai.models.generateContent({
-                            model: IMAGE_MODEL_NAME,
-                            contents: { parts: [{ text: scenePrompt }] }
-                        });
-                        const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-                        if (part) {
-                            imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                        }
-                     } catch (e) { console.error("Scene Gen Error", e); }
-                }
-
-                // Interface Update
-                if (gameResponse.interface) {
-                    nextMode = gameResponse.interface.modo;
-                    nextAllowInput = !!gameResponse.interface.permitir_input_livre;
-                    
-                    if (nextMode === 'botoes') {
-                        if (Array.isArray(gameResponse.interface.conteudo) && gameResponse.interface.conteudo.length > 0) {
-                            finalOptions = gameResponse.interface.conteudo as Option[];
-                        } else {
-                            finalOptions = [{ label: "Continuar", value: "Continuar" }];
-                        }
-                    } else if (nextMode === 'formulario' && gameResponse.interface.conteudo) {
-                        // Assuming the content passed for form is the schema
-                        finalForm = gameResponse.interface.conteudo as unknown as FormSchema;
-                    }
-                }
-            }
-
-            const modelMsg: Message = {
-                id: Date.now().toString(),
-                role: "model",
-                text: narrative,
-                gameResponse: gameResponse || undefined,
-                options: finalOptions,
-                imageUrl: imageUrl,
-                form: finalForm || undefined
-            };
-
-            setMessages(prev => [...prev, modelMsg]);
-            setInputMode(nextMode);
-            setAllowFreeInput(nextAllowInput);
-            
-            playTTS(narrative);
-
-            if (nextMode === 'botoes') {
-                setCurrentOptions(finalOptions);
-            } else {
-                setCurrentOptions([]);
-            }
-
-            if (finalForm) setCurrentFormSchema(finalForm);
-
-
-        } catch (error) {
-            console.error("API Error", error);
-            const errorMsg: Message = {
-                id: Date.now().toString(),
-                role: "model",
-                text: "O tecido da realidade tremeu (Erro de API). Tente novamente."
-            };
-            setMessages(prev => [...prev, errorMsg]);
-            setInputMode("texto_livre");
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    // Generic handler that sends system notes
-    const handleSystemAction = (text: string) => {
-        handleSendMessage(text);
-    };
-
-    const handleFormSubmit = (values: Record<string, string | string[]>) => {
-        if (values.classe && values.atributos) {
-            setCharCreationContext({
-                userClass: values.classe as string,
-                method: values.atributos as string
-            });
-        }
-        
-        const valueString = JSON.stringify(values);
-        handleSendMessage(`[SISTEMA: Ficha preenchida: ${valueString}]`);
-    };
-    
-    // Logic for "Contextual Inventory" (Inspecting items triggers AI description)
-    const handleInspect = (item: string) => {
-        handleSendMessage(`[SISTEMA: O jogador examina o item "${item}". Descreva-o sensorialmente considerando o local atual.]`);
-    };
-
-    const renderInputArea = () => (
-        <div className="flex gap-2 max-w-4xl mx-auto w-full">
-            <input
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage(inputText)}
-                placeholder="O que você faz?"
-                disabled={isLoading}
-                className="flex-1 bg-stone-900 border border-stone-700 text-stone-200 p-3 rounded focus:border-yellow-700 outline-none font-serif"
-            />
-            <button
-                onClick={() => handleSendMessage(inputText)}
-                disabled={isLoading || !inputText.trim()}
-                className="bg-yellow-900/30 text-yellow-600 border border-yellow-800/50 px-6 rounded font-bold hover:bg-yellow-900/50 disabled:opacity-50 transition-colors uppercase tracking-widest text-sm"
-            >
-                Enviar
-            </button>
-        </div>
-    );
-
-    return (
-        <div className="flex h-full w-full bg-[#1a1816] text-[#d1c4b2] overflow-hidden font-sans">
-            {/* Sidebar - Desktop Only for now or simplistic */}
-            <div className="hidden md:flex flex-col w-72 border-r border-[#3e352f] bg-[#141210] p-4 gap-4 overflow-y-auto">
-                 <div className="flex flex-col items-center gap-2 mb-4">
-                     <div className="w-32 h-32 rounded-full border-2 border-yellow-900 overflow-hidden bg-black shadow-lg relative">
-                         {status.avatarUrl ? (
-                             <img src={status.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
-                         ) : (
-                             <div className="w-full h-full flex items-center justify-center text-4xl text-stone-700">?</div>
-                         )}
-                         {/* Floating Damage Text Overlay */}
-                         {floatingTexts.map(ft => (
-                             <div key={ft.id} className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-4xl font-bold font-fantasy drop-shadow-md pointer-events-none animate-float-up ${ft.color}`} style={{ textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
-                                 {ft.text}
-                             </div>
-                         ))}
-                     </div>
-                     <h2 className="font-fantasy text-xl text-yellow-600">{status.nome}</h2>
-                     <span className="text-xs uppercase tracking-widest text-stone-500">{status.titulo}</span>
-                 </div>
-
-                 <div className="space-y-4">
-                     <div>
-                         <div className="flex justify-between text-xs uppercase font-bold text-stone-500 mb-1">
-                             <span>Vitalidade</span>
-                             <span>{status.hp_atual}/{status.hp_max}</span>
-                         </div>
-                         <div className="h-2 bg-stone-800 rounded-full overflow-hidden">
-                             <div 
-                                className="h-full bg-red-800 transition-all duration-500" 
-                                style={{ width: `${(status.hp_atual / status.hp_max) * 100}%`}}
-                             ></div>
-                         </div>
-                     </div>
-
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
-                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Local Atual</h4>
-                         <p className="font-serif text-sm text-stone-300">{status.local}</p>
-                     </div>
-
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
-                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Missão</h4>
-                         <p className="font-serif text-sm text-stone-300 italic">"{status.missao}"</p>
-                     </div>
-
-                     {/* INVENTORY SECTION */}
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
-                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2 flex justify-between">
-                            <span>Mochila</span>
-                            <span className="text-[10px] text-stone-600 font-normal normal-case italic">(Clique para examinar)</span>
-                         </h4>
-                         <div className="flex flex-wrap gap-2">
-                             {status.inventario?.map((item, i) => (
-                                 <button 
-                                    key={i} 
-                                    onClick={() => handleInspect(item)} 
-                                    className="text-xs bg-black/40 border border-stone-700 px-2 py-1 rounded text-stone-300 hover:border-yellow-700 hover:text-yellow-200 transition-all cursor-pointer" 
-                                    title="Inspecionar"
-                                 >
-                                     {item}
-                                 </button>
-                             ))}
-                             {(!status.inventario || status.inventario.length === 0) && <span className="text-xs text-stone-600 italic">Vazio</span>}
-                         </div>
-                     </div>
-
-                     <DividerDecoration />
-
-                     {/* AUDIO CONTROLS */}
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f] space-y-3">
-                         <div className="flex justify-between items-center">
-                            <h4 className="text-xs uppercase font-bold text-stone-500">Narração do Mestre</h4>
-                            {isSpeaking && <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>}
-                         </div>
-                         
-                         <label className="flex items-center gap-2 cursor-pointer">
-                             <div className="relative">
-                                 <input type="checkbox" className="hidden" checked={isAudioEnabled} onChange={() => setIsAudioEnabled(!isAudioEnabled)} />
-                                 <div className={`w-10 h-5 rounded-full shadow-inner transition-colors ${isAudioEnabled ? 'bg-yellow-900' : 'bg-stone-700'}`}></div>
-                                 <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-stone-300 shadow transition-transform ${isAudioEnabled ? 'translate-x-5' : 'translate-x-0'}`}></div>
-                             </div>
-                             <span className="text-sm text-stone-400">{isAudioEnabled ? "Ligado" : "Desligado"}</span>
-                         </label>
-
-                         <div>
-                             <h4 className="text-xs uppercase font-bold text-stone-500 mb-1">Volume</h4>
-                             <input 
-                                type="range" 
-                                min="0" 
-                                max="1" 
-                                step="0.1" 
-                                value={volume} 
-                                onChange={(e) => setVolume(parseFloat(e.target.value))}
-                                className="w-full h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer accent-yellow-700"
-                             />
-                         </div>
-                     </div>
-                 </div>
-            </div>
-
-            {/* Main Chat Area */}
-            <div className="flex-1 flex flex-col relative">
-                {/* Loot Notification (Toast) */}
-                {lootNotification && <LootToast item={lootNotification} />}
-
-                {/* Combat Tracker (Shown if combat state exists) */}
-                {status.combat && <CombatTracker combatState={status.combat} />}
-
-                {/* Messages Area */}
-                <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
-                    {messages.map((msg) => (
-                        <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-fade-in`}>
-                             <div className={`max-w-[90%] md:max-w-[80%] rounded-lg p-4 md:p-6 shadow-xl ${
-                                 msg.role === 'user' 
-                                 ? 'bg-stone-800/80 text-stone-200 border border-stone-700' 
-                                 : 'bg-[#1e1c19]/90 text-[#d1c4b2] border border-[#3e352f]'
-                             }`}>
-                                 {msg.imageUrl && (
-                                     <div className="mb-4 rounded-lg overflow-hidden border border-stone-700 relative group">
-                                         <img src={msg.imageUrl} alt="Scene" className="w-full h-auto max-h-[60vh] object-cover" />
-                                         
-                                         {/* Character Stats Overlay */}
-                                         {msg.gameResponse?.status_jogador?.atributos && (
-                                            <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center p-6 text-center backdrop-blur-[2px] transition-opacity duration-700 opacity-0 animate-fade-in group-hover:opacity-100">
-                                                <h3 className="font-fantasy text-2xl md:text-4xl text-yellow-500 mb-4 drop-shadow-lg border-b border-yellow-800/50 pb-2 w-full max-w-md">
-                                                    {msg.gameResponse.status_jogador.nome}, {msg.gameResponse.status_jogador.titulo.split("•")[1] || "Aventureiro"}
-                                                </h3>
-                                                <p className="text-stone-300 font-serif italic mb-6 text-sm md:text-base">
-                                                    "Seus atributos foram definidos pelo destino."
-                                                </p>
-                                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 w-full max-w-lg">
-                                                    {Object.entries(msg.gameResponse.status_jogador.atributos).map(([key, val]) => (
-                                                        <div key={key} className="bg-stone-900/80 p-2 md:p-3 rounded border border-yellow-900/40 shadow-lg backdrop-blur-sm">
-                                                            <div className="text-yellow-700 text-[10px] md:text-xs uppercase tracking-[0.2em] font-bold mb-1">{key}</div>
-                                                            <div className="text-stone-100 font-serif text-lg md:text-xl font-bold">{val}</div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                         )}
-                                     </div>
-                                 )}
-                                 <div className="markdown-body font-serif leading-relaxed text-sm md:text-base">
-                                     <ReactMarkdown>{msg.text}</ReactMarkdown>
-                                 </div>
-
-                                 {/* --- GAME ENGINE VISUAL EVENTS --- */}
-                                 {msg.role === 'model' && msg.gameResponse?.game_event && (
-                                     <GameEventCard event={msg.gameResponse.game_event} />
-                                 )}
-                                 
-                                 {/* Render Form if present in this message and it's the latest */}
-                                 {msg.role === 'model' && msg.form && messages[messages.length - 1].id === msg.id && (
-                                     <DynamicForm 
-                                        schema={msg.form} 
-                                        onSubmit={handleFormSubmit}
-                                        context={charCreationContext} 
-                                     />
-                                 )}
-                             </div>
-                        </div>
-                    ))}
-                    {isLoading && (
-                        <div className="flex justify-start animate-pulse">
-                            <div className="bg-[#1e1c19] p-4 rounded-lg border border-[#3e352f] text-stone-500 font-serif italic text-sm">
-                                O Mestre está pensando...
-                            </div>
-                        </div>
-                    )}
-                    <div ref={messagesEndRef} />
-                </div>
-
-                {/* Input Area */}
-                <div className="p-4 bg-[#141210] border-t border-[#3e352f]">
-                    {/* Render Quick Actions here if available */}
-                    <QuickActions actions={quickActions} onActionClick={handleSendMessage} />
-                    
-                    {inputMode === 'rolagem' ? (
-                        <div className="flex flex-col items-center gap-4 py-4 animate-fade-in">
-                            <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center">
-                                Rolagem Necessária
-                            </div>
-                             {/* Auto-roll handled by engine mostly, but kept for manual overrides if needed */}
-                        </div>
-                    ) : inputMode === 'botoes' ? (
-                        <div className="flex flex-col gap-4 w-full">
-                            <div className="flex flex-wrap gap-2 justify-center animate-fade-in">
-                                {currentOptions.map((opt, idx) => (
-                                    <button
-                                        key={idx}
-                                        onClick={() => handleSendMessage(opt.value)}
-                                        className="bg-stone-800 hover:bg-stone-700 border border-stone-600 px-4 py-3 rounded text-left flex flex-col min-w-[200px] transition-all hover:-translate-y-0.5"
-                                    >
-                                        <span className="text-yellow-500 font-bold text-sm">{opt.label}</span>
-                                        {opt.sub && <span className="text-stone-500 text-xs">{opt.sub}</span>}
-                                    </button>
-                                ))}
-                            </div>
-                            {allowFreeInput && renderInputArea()}
-                        </div>
-                    ) : inputMode === 'formulario' ? (
-                        <div className="text-center text-stone-500 text-sm italic py-2">
-                            Preencha o pergaminho acima para continuar...
-                        </div>
-                    ) : (
-                        renderInputArea()
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const root = createRoot(document.getElementById("root")!);
-root.render(<App />);
