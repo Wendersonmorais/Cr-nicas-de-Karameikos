@@ -31,6 +31,19 @@ interface RollRequest {
   dificuldade_oculta?: number;
 }
 
+interface Combatant {
+  name: string;
+  hp: number;
+  max_hp: number;
+  is_active: boolean;
+  avatar?: string;
+}
+
+interface CombatState {
+  round: number;
+  turn_order: Combatant[];
+}
+
 interface InterfaceData {
   modo: "rolagem" | "botoes" | "formulario" | "texto_livre";
   permitir_input_livre?: boolean; 
@@ -60,6 +73,8 @@ interface ItemObtainedData {
   item_name: string;
   quantity: number;
   description: string;
+  rarity?: "common" | "uncommon" | "rare" | "legendary";
+  icon?: "weapon" | "potion" | "armor" | "misc";
 }
 
 interface GameEvent {
@@ -81,6 +96,8 @@ interface GameResponse {
     inventario?: string[];
     atributos?: Record<string, string>; 
   };
+  combat_state?: CombatState; // Added combat state
+  quick_actions?: string[]; // Added quick actions
   update_avatar?: {
     trigger: boolean;
     visual_prompt?: string;
@@ -110,6 +127,7 @@ interface GameStatus {
   avatarUrl?: string;
   inventario?: string[];
   atributos?: Record<string, string>; 
+  combat?: CombatState;
 }
 
 // --- Constants & Config ---
@@ -174,7 +192,9 @@ Você deve SEMPRE responder com um objeto JSON válido. NUNCA envie texto solto 
       // "target": "Goblin", "damage": 5, "damage_type": "Cortante", "is_critical": false
       
       // SE type="item_obtained":
-      // "item_name": "Espada Curta", "quantity": 1, "description": "Lâmina enferrujada."
+      // "item_name": "Espada Curta", "quantity": 1, "description": "Lâmina enferrujada.", "rarity": "common", "icon": "weapon"
+      // rarity options: common, uncommon, rare, legendary
+      // icon options: weapon, potion, armor, misc
     }
   },
 
@@ -188,6 +208,16 @@ Você deve SEMPRE responder com um objeto JSON válido. NUNCA envie texto solto 
       "inventario": ["Corda", "Tocha"],
       "atributos": { "for": "15", "des": "12", ... } 
   },
+
+  "combat_state": { // Opcional, envie APENAS se houver combate ativo
+      "round": 1,
+      "turn_order": [
+          {"name": "Voron", "hp": 10, "max_hp": 10, "is_active": true, "avatar": ""},
+          {"name": "Goblin", "hp": 7, "max_hp": 7, "is_active": false}
+      ]
+  },
+  
+  "quick_actions": ["Olhar ao redor", "Checar inventário", "Falar com NPC"], // NEW: 3-5 ações curtas contextuais
 
   "update_avatar": {
       "trigger": false, // True apenas se a aparência do personagem mudou drasticamente ou é o início
@@ -357,6 +387,118 @@ const GameEventCard = ({ event }: { event: GameEvent }) => {
     );
 };
 
+// 3. Combat Tracker Component
+const CombatTracker = ({ combatState }: { combatState: CombatState }) => {
+  if (!combatState || !combatState.turn_order) return null;
+
+  return (
+    <div className="w-full bg-black/80 backdrop-blur-md border-b border-yellow-900/30 p-3 flex gap-4 overflow-x-auto items-center animate-fade-in">
+      <span className="text-xs font-bold text-red-500 uppercase tracking-widest whitespace-nowrap mr-2">
+        Turno {combatState.round}
+      </span>
+      
+      {combatState.turn_order.map((char, idx) => (
+        <div 
+          key={idx}
+          className={`
+            relative flex flex-col items-center min-w-[60px] transition-all duration-300
+            ${char.is_active ? 'scale-110 opacity-100' : 'opacity-60 grayscale'}
+          `}
+        >
+          {/* Avatar com Borda de Destaque se for o Turno Ativo */}
+          <div className={`w-10 h-10 rounded-full border-2 overflow-hidden ${char.is_active ? 'border-amber-500 shadow-[0_0_10px_#f59e0b]' : 'border-gray-600'}`}>
+             {char.avatar ? (
+                <img src={char.avatar} alt={char.name} className="w-full h-full object-cover" />
+             ) : (
+                <div className="w-full h-full bg-stone-800 flex items-center justify-center text-[8px]">{char.name.substring(0,2)}</div>
+             )}
+          </div>
+          
+          {/* Barra de Vida Miniatura */}
+          <div className="w-full h-1.5 bg-gray-700 mt-1 rounded-full overflow-hidden">
+            <div 
+              className={`h-full transition-all duration-500 ${char.hp < char.max_hp * 0.3 ? 'bg-red-500' : 'bg-green-500'}`} 
+              style={{ width: `${Math.max(0, Math.min(100, (char.hp / char.max_hp) * 100))}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// 4. Loot Toast Component (Notification)
+const LootToast = ({ item }: { item: ItemObtainedData }) => {
+  if (!item) return null;
+
+  const colors: Record<string, string> = {
+    common: "border-gray-500 shadow-gray-500/10",
+    uncommon: "border-green-500 shadow-green-500/20",
+    rare: "border-blue-500 shadow-blue-500/20",
+    legendary: "border-amber-500 shadow-amber-500/40"
+  };
+
+  const theme = colors[item.rarity || 'common'] || colors.common;
+
+  // Simple icon mapping logic
+  const getIcon = () => {
+    if (item.icon) {
+        switch(item.icon) {
+            case 'potion': return '🧪';
+            case 'weapon': return '⚔️';
+            case 'armor': return '🛡️';
+            case 'misc': return '🎒';
+        }
+    }
+    // Fallback based on name keywords if no icon provided
+    const name = item.item_name.toLowerCase();
+    if (name.includes('poção') || name.includes('elixir')) return '🧪';
+    if (name.includes('espada') || name.includes('machado') || name.includes('arco')) return '⚔️';
+    if (name.includes('armadura') || name.includes('escudo') || name.includes('manto')) return '🛡️';
+    return '🎒';
+  };
+
+  return (
+    <div className={`
+      absolute top-20 right-4 z-50 flex items-center gap-3 p-3 rounded-lg 
+      bg-gray-900/90 border-l-4 ${theme} shadow-lg backdrop-blur-sm
+      animate-in slide-in-from-right duration-500
+    `}>
+      <div className="w-10 h-10 bg-black/40 rounded flex items-center justify-center text-2xl">
+        {getIcon()}
+      </div>
+      
+      <div>
+        <p className="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Item Obtido</p>
+        <p className="font-bold text-white text-sm">{item.item_name}</p>
+      </div>
+    </div>
+  );
+};
+
+// 5. Quick Actions Component
+const QuickActions = ({ actions, onActionClick }: { actions: string[], onActionClick: (action: string) => void }) => {
+  if (!actions || actions.length === 0) return null;
+
+  return (
+    <div className="flex gap-2 mb-2 px-1 overflow-x-auto pb-2 w-full">
+      {actions.map((actionText, idx) => (
+        <button
+          key={idx}
+          onClick={() => onActionClick(actionText)}
+          className="
+            whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium
+            bg-stone-800 text-stone-300 border border-stone-600
+            hover:bg-stone-700 hover:text-white hover:border-yellow-600
+            transition-all active:scale-95 shadow-sm
+          "
+        >
+          {actionText}
+        </button>
+      ))}
+    </div>
+  );
+};
 
 // --- Audio Utils ---
 function decode(base64: string) {
@@ -369,12 +511,21 @@ function decode(base64: string) {
   return bytes;
 }
 
-async function decodeAudioData(
+// Manual PCM Decoder to fix TTS audio error
+async function decodePCM(
   data: Uint8Array,
   ctx: AudioContext,
   sampleRate: number,
   numChannels: number,
 ): Promise<AudioBuffer> {
+  const byteLength = data.length;
+  // Ensure buffer length is even for Int16Array
+  if (byteLength % 2 !== 0) {
+      const newData = new Uint8Array(byteLength + 1);
+      newData.set(data);
+      data = newData;
+  }
+  
   const dataInt16 = new Int16Array(data.buffer);
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
@@ -662,6 +813,8 @@ const App = () => {
     const [allowFreeInput, setAllowFreeInput] = useState(true); 
     const [currentOptions, setCurrentOptions] = useState<Option[]>(INITIAL_BUTTONS);
     const [currentFormSchema, setCurrentFormSchema] = useState<FormSchema | null>(null);
+    const [lootNotification, setLootNotification] = useState<ItemObtainedData | null>(null);
+    const [quickActions, setQuickActions] = useState<string[]>([]);
     
     // Floating Text State (Damage/Heal numbers)
     const [floatingTexts, setFloatingTexts] = useState<{id: number, text: string, color: string}[]>([]);
@@ -745,7 +898,7 @@ const App = () => {
 
             const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
             if (base64Audio && audioContextRef.current && gainNodeRef.current) {
-                const audioBuffer = await decodeAudioData(
+                const audioBuffer = await decodePCM(
                     decode(base64Audio),
                     audioContextRef.current,
                     24000,
@@ -818,7 +971,27 @@ const App = () => {
             if (gameResponse) {
                 // Status Update
                 if (gameResponse.status_jogador) {
-                    setStatus(prev => ({ ...prev, ...gameResponse!.status_jogador }));
+                    setStatus(prev => ({ 
+                        ...prev, 
+                        ...gameResponse!.status_jogador, 
+                        combat: gameResponse!.combat_state 
+                    }));
+                } else if (gameResponse.combat_state) {
+                    setStatus(prev => ({ ...prev, combat: gameResponse!.combat_state }));
+                }
+
+                // Loot Notification Trigger
+                if (gameResponse.game_event?.type === 'item_obtained') {
+                    setLootNotification(gameResponse.game_event.data as ItemObtainedData);
+                    // Dismiss after 4 seconds
+                    setTimeout(() => setLootNotification(null), 4000);
+                }
+                
+                // Quick Actions Update
+                if (gameResponse.quick_actions) {
+                    setQuickActions(gameResponse.quick_actions);
+                } else {
+                    setQuickActions([]);
                 }
 
                 // Visual Update
@@ -1054,6 +1227,12 @@ const App = () => {
 
             {/* Main Chat Area */}
             <div className="flex-1 flex flex-col relative">
+                {/* Loot Notification (Toast) */}
+                {lootNotification && <LootToast item={lootNotification} />}
+
+                {/* Combat Tracker (Shown if combat state exists) */}
+                {status.combat && <CombatTracker combatState={status.combat} />}
+
                 {/* Messages Area */}
                 <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
                     {messages.map((msg) => (
@@ -1120,6 +1299,9 @@ const App = () => {
 
                 {/* Input Area */}
                 <div className="p-4 bg-[#141210] border-t border-[#3e352f]">
+                    {/* Render Quick Actions here if available */}
+                    <QuickActions actions={quickActions} onActionClick={handleSendMessage} />
+                    
                     {inputMode === 'rolagem' ? (
                         <div className="flex flex-col items-center gap-4 py-4 animate-fade-in">
                             <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center">
