@@ -109,10 +109,18 @@ type GameStatus = {
     atributos?: Record<string, string>;
     combat?: CombatState;
     avatarUrl?: string;
-    grupo?: GroupMember[]; // Lista de companheiros
-    talentos?: string[]; // Novos Talentos Regionais
+    grupo?: GroupMember[]; 
+    talentos?: string[]; 
     missoes_ativas?: Quest[];
-    reputacao?: { thyatis: number; traladara: number }; // Novo Sistema de Facções
+    // Sistema de Facções Expandido (Política de Guerra)
+    reputacao?: { 
+        thyatis: number; 
+        traladara: number;
+        igreja_karameikos?: number;
+        ordem_grifo?: number;
+        elfos_callarii?: number;
+    }; 
+    pistas_descobertas?: string[]; // Sistema de Mistério
 };
 
 type GameResponse = {
@@ -123,18 +131,17 @@ type GameResponse = {
     quick_actions?: string[];
     update_avatar?: { trigger: boolean; visual_prompt: string };
     
-    // NOVO CAMPO: Engine de Cenários
-    // A ideia é que, quando o jogador muda de local (ex: entra numa taverna), o jogo gere uma imagem panorâmica de fundo.
+    // Engine de Cenários
     update_scene?: { 
         trigger: boolean; 
-        visual_prompt: string; // Descrição do ambiente (Ex: "Dark foggy medieval harbor...")
+        visual_prompt: string; 
         style?: string; 
     };
     
     interface?: {
         modo: "texto_livre" | "botoes" | "rolagem" | "formulario" | "selecao_fichas";
         permitir_input_livre?: boolean;
-        conteudo?: Option[] | FormSchema; // Para 'selecao_fichas', o conteudo é ignorado e usamos a const PREGEN
+        conteudo?: Option[] | FormSchema; 
     };
 };
 
@@ -216,115 +223,154 @@ const PREGEN_CHARACTERS: PregenCharacter[] = [
 
 const SYSTEM_INSTRUCTION = `
 **PERSONA:**
-Você é um Motor de Jogo (Game Engine) e Mestre de RPG narrando a campanha "Os Dracos de Karameikos" (D&D 5e).
-Seu estilo é "Grim Dark Fantasy", sensorial, perigoso e implacável.
+Você é um Motor de Jogo (Game Engine) e Mestre de RPG narrando a campanha "Tirania dos Dracos em Karameikos" (D&D 5e).
+Seu estilo é "Grim Dark Fantasy" com foco em **GUERRA, CAOS e ESCOLHAS MORAIS**.
 
-**CONTEXTO DA CAMPANHA: "OS DRACOS DE KARAMEIKOS"**
-A trama central envolve a busca por 6 ovos ancestrais chamados "Dracos".
-- **Vilão Principal:** Syndarion (Elfo Renegado) e Arthanax (Profeta do Culto do Dragão).
-- **Objetivo do Vilão:** Ressuscitar Tiamat.
-- **Base Inicial:** A cidade de Threshold, governada pelo Baron Sherlane Halaran.
+**ROTEIRO DE INÍCIO (EM CHAMAS - BASEADO EM GREENEST):**
+1. **O ATAQUE:** O jogo começa *in media res*. Threshold está sob ataque. O céu está vermelho. Um Dragão Azul Adulto (Lennithon) destrói as defesas com relâmpagos.
+2. **OS INVASORES:** Kobolds e Cultistas (Garras de Dragão) invadem casas. Eles NÃO querem ouro, eles buscam "A Relíquia" (Dracos/Ovos).
+3. **A ESCOLHA CRÍTICA:** O jogador vê duas cenas simultâneas e deve escolher IMEDIATAMENTE:
+   - **Cena A:** Uma família Traladarana encurralada por Kobolds sádicos.
+   - **Cena B:** A carruagem do Barão Sherlane Halaran sendo destruída pelo Meio-Dragão Langdedrosa Cyanwrath (Campeão do Culto).
+4. **DEFINIÇÃO DE CLASSE & ALIANÇA:**
+   - Salvar a Família = Aliança com Traladara (+1) / Inimizade com Thyatis (-1). Define classes protetoras (Paladino, Clérigo).
+   - Salvar o Barão = Aliança com Thyatis (+1) / Inimizade com Traladara (-1). Define classes marciais/arcanas (Guerreiro, Mago).
+   - Caçar nas Sombras = Neutro / Ordem do Grifo. Define classes furtivas (Ladino, Patrulheiro).
 
-**DIRETRIZES DE NPCs (PRIORIDADE ALTA):**
-Sempre que o jogador estiver nos locais apropriados, use estes NPCs canônicos em vez de criar novos:
-1. **Em Threshold:** Baron Sherlane (Líder Sábio), Aleena Halaran (Clériga Bondosa).
-2. **Na Floresta Radlebb:** Doriath (Elfo Guardião).
-3. **Antagonistas:** Valkara (Meio-Dragão Assassina), Ignar (Dragão Vermelho Jovem).
+**PROTOCOLO DE CRIAÇÃO DE PERSONAGEM (FORMULÁRIO):**
+Para ativar a ficha, envie a interface com \`modo: "formulario"\` e a estrutura exata abaixo:
+\`\`\`json
+"interface": {
+    "modo": "formulario",
+    "conteudo": {
+        "titulo": "Criação de Personagem",
+        "fields": [
+            { "id": "nome", "type": "text", "label": "Nome", "placeholder": "Nome do Herói" },
+            { "id": "raca", "type": "select", "label": "Raça", "options": ["Humano", "Anão", "Elfo", "Pequenino", "Draconato", "Gnomo", "Meio-Elfo", "Meio-Orc", "Tiefling"] },
+            { "id": "classe", "type": "select", "label": "Classe", "options": ["Guerreiro", "Paladino", "Ladino", "Clérigo", "Mago", "Patrulheiro", "Bardo", "Druida", "Feiticeiro", "Bruxo", "Monge", "Bárbaro"] },
+            { "id": "atributos", "type": "select", "label": "Geração de Atributos", "options": ["Padrão", "Compra de Pontos", "Rolagem"] },
+            { "id": "visual_style", "type": "text", "label": "Estilo Visual", "placeholder": "Ex: Guerreiro com cicatriz, armadura gasta, pintura a óleo." }
+        ]
+    }
+}
+\`\`\`
+**IMPORTANTE:** Use a descrição do "Estilo Visual" para gerar um \`update_avatar\` preciso imediatamente após o jogador enviar o formulário.
 
-**MOTOR DE RUMORES (LORE INJECTION):**
-Sempre que o jogador estiver em locais sociais (Tavernas, Mercados, Praças, Guildas), calcule internamente uma chance (aprox. 20%). Se ocorrer, insira um rumor baseado nas "Missões Secundárias" na narrativa ambiental:
-- "Você ouve mercadores sussurrando sobre a 'Caravana Atacada' na estrada leste e mercadorias roubadas por goblins."
-- "Um velho fala com medo sobre a 'Estátua Misteriosa' em Verge que começou a brilhar e chorar sangue."
-- "Boatos de que o 'Anel de Ferro' (escravagistas) está sequestrando viajantes solitários perto do rio."
-- "Alguém comenta que viu luzes estranhas nas Ruínas de Koriszegy à noite."
-Apresente isso como "fofoca de fundo" (ambientação), não como um diálogo direto obrigatório, a menos que o jogador decida investigar.
+**HIERARQUIA DO CULTO (TIRANIA DOS DRAGÕES):**
+Use os ranques oficiais do culto para descrever inimigos:
+1. **Garras de Dragão (Dragonclaws):** Fanáticos de baixo nível, usam roupas de couro preto e máscaras simples.
+2. **Asas de Dragão (Dragonwings):** Voam com capas planadoras, atacam de cima.
+3. **Oradores da Wyrm (Wyrmspeakers):** Os líderes que portam as Máscaras do Dragão. Eles conseguem "sentir" onde o jogador está se ele estiver carregando um Draco.
 
-**IA TÁTICA DE COMBATE:**
-Ao narrar combates, NÃO apenas cause dano. Use as habilidades especiais dos monstros descritas no Manual dos Monstros ou Tome of Beasts.
-- Se for um **Kobold**, use "Táticas de Matilha" (Vantagem se tiver aliado perto).
-- Se for um **Dragão**, descreva o "Sopro" ou a "Aura de Medo" antes do dano.
-- Se for o vilão **Valkara (Meio-Dragão)**, use o Sopro Ácido descrito no Guia da Campanha.
-Torne o combate cinematográfico, descrevendo o impacto ambiental das habilidades.
+**VILÃO INICIAL:**
+**Langdedrosa Cyanwrath:** O Campeão Meio-Dragão Azul. Honrado mas brutal. Ele busca um duelo digno e persegue o jogador no início.
 
-**EFEITO DE ARTEFATO (OS DRACOS):**
-Se o array 'inventario' contiver "Draco", "Ovo de Dragão" ou "Pedra do Dragão":
-- Narre sussurros mentais ocasionais (sedução de poder ou medo) ou sensações de calor/frio vindo da mochila.
-- Dragões Cromáticos e Cultistas do Dragão devem ser mais agressivos (eles sentem a presença mística do ovo).
-- Use o conhecimento de "Dragões Aliados de Tiamat" para decidir se um dragão é atraído pelo ovo durante viagens longas.
+**SISTEMA DE CONSELHO (POLÍTICA DE GUERRA):**
+Mantenha um placar político oculto em 'reputacao'.
+- **Thyatis (Nobreza):** Lei e Ordem.
+- **Traladara (Povo):** Tradição e Comunidade.
+- **Igreja:** Fé e Pureza.
+- **Grifo:** Força Militar.
+- **Elfos:** Natureza e Magia.
+*Regra:* Se uma facção chegar a -3, eles retiram apoio na guerra final.
+*Feedback:* NPCs reagem com hostilidade (recusa de ajuda) ou gratidão baseado nisso.
 
-**SISTEMA DE FACÇÕES (POLÍTICA DE KARAMEIKOS):**
-Monitore as ações do jogador e atualize o campo 'reputacao' no JSON.
-- **Thyatianos (Conquistadores):** O jogador ganha favor ao ajudar o Barão Sherlane, a Guarda ou o Duque Stefan.
-- **Traladaranos (Nativos):** O jogador ganha favor ao ajudar o povo comum, rebeldes ou ciganos Vistani.
-- **Consequência:** Isso muda preços em lojas e como NPCs reagem (preços dobram se a reputação for baixa com a facção do comerciante).
+**REGRAS DE OURO:**
+1. **JSON OBRIGATÓRIO:** Toda resposta termina com \`--- [JSON_DATA] ---\`.
+2. **SHOW, DON'T TELL:** O cheiro de ozônio, o grito do dragão, o calor do fogo. Use descrições sensoriais intensas.
+3. **DADOS:** Em combate, use o sistema de DiceRoll para ataques e danos.
 
-**REGRA DE OURO (OUTPUT JSON):**
-Você deve SEMPRE responder com um objeto JSON válido.
-**IMPORTANTE:** NUNCA inclua tags de sistema (como [update_scene] ou [update_avatar]) no texto narrativo visível. Essas instruções devem ir APENAS dentro do JSON.
-Use o campo "status_jogador.missoes_ativas" para atualizar a lista de missões (Quests) do jogador.
-
-**ROTEIRO DE INÍCIO DE JOGO (O CHAMADO):**
-
-**PASSO 1: A RESPOSTA AO BARÃO**
-- **Contexto:** O jogador está no Solar do Barão Halaran e acabou de escolher uma identidade (Guerreiro, Estudioso, Viajante).
-- **AÇÃO DO MESTRE:**
-  1. **Interprete a escolha:** Se o jogador disse "Sou um guerreiro...", gere automaticamente uma ficha de Guerreiro Nível 1. Se "Estudioso", Mago ou Ladino. Se "Viajante", Patrulheiro.
-  2. **Defina Atributos/Equipamento:** Preencha 'status_jogador' com base na escolha (Ex: Dê uma Espada da Família para o Guerreiro, ou um Mapa Antigo para o Estudioso).
-  3. **Narrativa:** O Barão aceita a ajuda.
-  4. **O Grupo:** Aleena Halaran (Clériga) e um Patrulheiro Elfo se juntam ao jogador para a missão.
-  5. **Missão:** "Investigar as Ruínas de Dymrak".
-
-**PASSO 2: A PARTIDA**
-- Após a formação do grupo, o jogo segue para a exploração ou combate imediato se houver uma emboscada na saída da cidade.
-
-**PROTOCOLO DE SAÍDA (OBRIGATÓRIO):**
-Termine SEMPRE com um bloco JSON oculto separado por "--- [JSON_DATA] ---".
+**SCHEMA JSON DE RESPOSTA:**
+\`\`\`json
+{
+  "narrative": "Texto narrativo...",
+  "game_event": { "type": "none", "data": {} },
+  "status_jogador": { 
+      "nome": "Voron", 
+      "titulo": "Sobrevivente",
+      "hp_atual": 10, 
+      "hp_max": 10,
+      "armor_class": 10,
+      "local": "Threshold (Em Chamas)",
+      "missao": "Sobreviver",
+      "inventario": [],
+      "grupo": [],
+      "reputacao": { 
+          "thyatis": 0, 
+          "traladara": 0,
+          "igreja_karameikos": 0,
+          "ordem_grifo": 0,
+          "elfos_callarii": 0
+      },
+      "pistas_descobertas": []
+  },
+  "combat_state": { "round": 0, "turn_order": [] },
+  "update_scene": { "trigger": false, "visual_prompt": "" },
+  "update_avatar": { "trigger": false, "visual_prompt": "" },
+  "interface": { "modo": "botoes", "conteudo": [] }
+}
+\`\`\`
 `;
 
 // Mensagem inicial com o Menu Principal contextualizado
 const INITIAL_MESSAGE: Message = {
     id: 'intro',
     role: 'model',
-    text: "O vento uiva sobre as muralhas de Threshold. Você está no salão comunal do Barão Sherlane Halaran. Mapas antigos estão espalhados sobre a mesa de carvalho.\n\n— *A lenda é real* — diz o Barão, com a voz pesada de preocupação. — *Os Dracos... ovos de poder primordial capazes de trazer Tiamat de volta... eles estão aqui em Karameikos. Meus batedores relatam que o elfo renegado Syndarion já está se movendo para encontrá-los.*\n\nEle olha nos seus olhos, buscando um sinal de coragem.\n\n— *Eu não posso enviar um exército sem causar pânico ou guerra com Thyatis. Preciso de alguém capaz de agir nas sombras e nas selvas. Preciso de você.*\n\nAntes de aceitar o peso do destino... quem é você nesta sala?",
+    text: "O céu noturno sobre Threshold não é preto, é vermelho-sangue. O rugido ensurdecedor de um dragão abala os ossos do seu peito, seguido pelo som de madeira estilhaçando quando a torre do sino da igreja desmorona.\n\nVocê corre pelas ruas em pânico. Kobolds sibilantes saltam das sombras, incendiando casas com tochas. Mas eles não estão saqueando... eles estão *procurando*.\n\n— *Achem o Portador!* — ruge uma voz profunda. No centro da praça, um Meio-Dragão de dois metros de altura, vestindo armadura roxa, ergue um plebeu pelo pescoço com uma mão. — *Onde está a Caixa de Ferro?!*\n\nO caos é total. À sua esquerda, um grupo de guardas tenta proteger a entrada do Solar do Barão. À sua direita, civis fogem para o rio, perseguidos por cultistas.\n\nNo meio desse inferno, quem é você?",
     options: [
         { 
-            label: "Guerreiro Local", 
-            value: "Sou um guerreiro de Threshold, leal ao Barão. (Defina minha classe como Guerreiro e me dê um equipamento herdado de família)" 
+            label: "O Defensor do Povo", 
+            value: "Eu me lanço para proteger os civis no rio. (Defina minha classe como Paladino ou Clérigo e inicie combate com Kobolds)" 
         },
         { 
-            label: "Caçador de Relíquias", 
-            value: "Sou um estudioso arcano ou ladino, interessado no poder dos Dracos. (Defina minha classe como Mago ou Ladino e me dê um fragmento de mapa)" 
+            label: "O Soldado do Barão", 
+            value: "Corro para reforçar a guarda no Solar. (Defina minha classe como Guerreiro ou Patrulheiro e inicie combate tático)" 
         },
         { 
-            label: "Forasteiro Relutante", 
-            value: "Sou um viajante que apenas buscava abrigo, mas agora estou envolvido. (Defina minha classe como Patrulheiro ou Bárbaro e me dê um motivo pessoal para odiar o Culto do Dragão)" 
+            label: "O Oportunista Sombrio", 
+            value: "Uso o caos para me esgueirar e observar o Meio-Dragão. (Defina minha classe como Ladino ou Mago e faça um teste de Furtividade)" 
         }
     ],
     gameResponse: {
-        narrative: "O vento uiva...",
+        narrative: "O céu noturno...",
         status_jogador: { 
             nome: "Desconhecido", 
-            titulo: "Recruta", 
+            titulo: "Sobrevivente", 
             hp_atual: 10, 
             hp_max: 10, 
             armor_class: 10,
-            local: "Solar do Barão Halaran (Threshold)", 
-            missao: "A Busca pelos Dracos", // Missão Principal definida
-            inventario: ["Mochila de Aventureiro"],
+            local: "Threshold (Em Chamas)", 
+            missao: "Sobreviver ao Ataque do Culto", 
+            inventario: ["Arma Inicial"],
             grupo: [],
-            reputacao: { thyatis: 0, traladara: 0 } // Inicializa Facções
+            reputacao: { 
+                thyatis: 0, 
+                traladara: 0,
+                igreja_karameikos: 0,
+                ordem_grifo: 0,
+                elfos_callarii: 0
+            },
+            pistas_descobertas: []
+        },
+        combat_state: {
+             round: 1,
+             turn_order: [
+                 {name: "Herói", hp: 10, max_hp: 10, is_active: true},
+                 {name: "Kobold Saqueador", hp: 5, max_hp: 5, is_active: false}
+             ]
         },
         update_scene: {
             trigger: true,
-            visual_prompt: "Baron Halaran's Manor interior, heavy oak table with maps, fireplace, medieval dark fantasy atmosphere, candlelight.",
+            visual_prompt: "Cinematic wide shot of a medieval town at night engulfed in flames. An Adult Blue Dragon flies overhead against a blood-red sky, breathing lightning. Chaos in the streets, burning houses. Dark fantasy art style, dramatic lighting.",
+            style: "Cinematic Action"
         },
         interface: { 
             modo: "botoes", 
             permitir_input_livre: true,
             conteudo: [
-                { label: "Guerreiro Local", value: "Sou um guerreiro de Threshold, leal ao Barão. (Defina minha classe como Guerreiro e me dê um equipamento herdado de família)" },
-                { label: "Caçador de Relíquias", value: "Sou um estudioso arcano ou ladino, interessado no poder dos Dracos. (Defina minha classe como Mago ou Ladino e me dê um fragmento de mapa)" },
-                { label: "Forasteiro Relutante", value: "Sou um viajante que apenas buscava abrigo, mas agora estou envolvido. (Defina minha classe como Patrulheiro ou Bárbaro e me dê um motivo pessoal para odiar o Culto do Dragão)" }
+                { label: "O Defensor do Povo", value: "Eu me lanço para proteger..." },
+                { label: "O Soldado do Barão", value: "Corro para reforçar..." },
+                { label: "O Oportunista Sombrio", value: "Uso o caos..." }
             ] 
         }
     }
@@ -621,27 +667,30 @@ const PregenSelector = ({ onSelect }: { onSelect: (char: PregenCharacter) => voi
 
 
 // Advanced Dynamic Form with Point Buy & Dice Logic
-const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema, onSubmit: (v: any) => void, context: any }) => {
+const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema | any, onSubmit: (v: any) => void, context: any }) => {
     const [formData, setFormData] = useState<any>({});
     const [pointsUsed, setPointsUsed] = useState(0);
 
+    // Robust schema normalization
+    const safeFields = Array.isArray(schema) ? schema : (schema?.fields || []);
+    const safeTitle = Array.isArray(schema) ? "Formulário" : (schema?.titulo || "");
+
     // Initialize defaults from schema if available
     useEffect(() => {
-        if (schema && schema.fields) {
+        if (safeFields.length > 0) {
             const defaults: any = {};
-            schema.fields.forEach(f => {
+            safeFields.forEach((f: any) => {
                 if (f.defaultValue) defaults[f.id] = f.defaultValue;
             });
             setFormData((prev: any) => ({ ...defaults, ...prev }));
         }
-    }, [schema]);
+    }, [schema, safeFields]); 
 
     const STAT_IDS = ['for', 'des', 'con', 'int', 'sab', 'car'];
     
     // Auto-detect methodology based on previously selected fields or context
     const isPointBuy = formData['atributos']?.includes('Compra') || context?.method?.includes('Compra');
     const isRolling = formData['atributos']?.includes('Rolagem') || context?.method?.includes('Rolagem');
-    const isStandard = formData['atributos']?.includes('Padrão') || context?.method?.includes('Padrão');
 
     const getPointCost = (val: number) => {
         if (val < 8) return 0;
@@ -671,9 +720,19 @@ const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema, onSubm
         setFormData((prev: any) => ({ ...prev, [id]: value }));
     };
 
+    // Show error if absolutely no fields found even after normalization attempt
+    if (!safeFields || safeFields.length === 0) {
+         return (
+            <div className="bg-red-900/30 border border-red-700 p-4 rounded-lg my-4 text-center">
+                <p className="text-red-300 font-bold mb-1">Erro Arcano (Schema Vazio)</p>
+                <p className="text-xs text-red-400/80 italic">O Mestre enviou um pergaminho em branco. Tente outra ação.</p>
+            </div>
+        );
+    }
+
     return (
         <div className="bg-[#1e1c19] border border-stone-700 p-6 rounded-lg max-w-2xl mx-auto my-6 shadow-2xl animate-fade-in">
-            {schema.titulo && <h3 className="font-fantasy text-2xl text-yellow-600 mb-6 text-center tracking-widest">{schema.titulo}</h3>}
+            {safeTitle && <h3 className="font-fantasy text-2xl text-yellow-600 mb-6 text-center tracking-widest">{safeTitle}</h3>}
             
             {/* Contextual Header for Point Buy */}
             {isPointBuy && (
@@ -691,7 +750,7 @@ const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema, onSubm
             )}
 
             <div className="space-y-4">
-                {schema.fields.map((field, idx) => {
+                {safeFields.map((field: FormField, idx: number) => {
                     const isStat = STAT_IDS.includes(field.id);
                     
                     if (isStat && isRolling) {
@@ -733,6 +792,7 @@ const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema, onSubm
                                         className="w-full bg-black/40 border border-stone-700 text-stone-300 p-2 rounded focus:border-yellow-700 outline-none"
                                         value={formData[field.id] || ''}
                                         onChange={(e) => handleInputChange(field.id, e.target.value)}
+                                        placeholder={field.placeholder || ''} 
                                     />
                                     {isStat && isPointBuy && <span className="absolute right-2 top-2 text-[10px] text-stone-500">-{getPointCost(parseInt(formData[field.id] || "8"))}pts</span>}
                                 </div>
@@ -751,853 +811,3 @@ const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema, onSubm
         </div>
     );
 };
-
-const QuickActions = ({ actions, onActionClick }: { actions: string[], onActionClick: (action: string) => void }) => {
-    if (!actions || actions.length === 0) return null;
-    return (
-        <div className="flex flex-wrap gap-2 mb-4 justify-center">
-            {actions.map((action, idx) => (
-                <button 
-                    key={idx}
-                    onClick={() => onActionClick(action)}
-                    className="text-xs bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-stone-200 border border-stone-700 px-3 py-1 rounded-full transition-colors"
-                >
-                    {action}
-                </button>
-            ))}
-        </div>
-    );
-};
-
-// --- COMPONENT: Audio Controller (Updated for Header) ---
-const AudioController = ({ isPlaying, setIsPlaying, volume, setVolume, isAudioEnabled, setIsAudioEnabled }: { 
-    isPlaying: boolean, 
-    setIsPlaying: (v: boolean) => void, 
-    volume: number,
-    setVolume: (v: number) => void,
-    isAudioEnabled: boolean,
-    setIsAudioEnabled: (v: boolean) => void
-}) => {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  
-  // URL de uma música de fantasia "Royalty Free"
-  const MUSIC_URL = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=fantasy-orchestral-adventure-109285.mp3"; 
-
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
-      if (isPlaying) {
-        audioRef.current.play().catch(e => console.log("Autoplay bloqueado:", e));
-      } else {
-        audioRef.current.pause();
-      }
-    }
-  }, [isPlaying, volume]);
-
-  return (
-    <div className="flex items-center gap-3">
-        <audio ref={audioRef} src={MUSIC_URL} loop />
-        
-        {/* Toggle Speech */}
-        <button 
-            onClick={() => setIsAudioEnabled(!isAudioEnabled)}
-            className={`p-2 rounded-full border transition-all ${isAudioEnabled ? 'bg-yellow-900/40 border-yellow-600 text-yellow-500' : 'bg-black/40 border-stone-700 text-stone-500'}`}
-            title="Narração"
-        >
-            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-5.5l6-4.5-6-4.5v9z"/></svg>
-        </button>
-
-        {/* Music Controls */}
-        <div className="flex items-center gap-2 bg-[#2a2622] rounded-full px-2 py-1 border border-[#3e352f]">
-            <button 
-                onClick={() => setIsPlaying(!isPlaying)}
-                className={`p-1.5 rounded-full transition-all ${isPlaying ? 'text-yellow-500 animate-pulse' : 'text-stone-500'}`}
-                title="Música de Fundo"
-            >
-                {isPlaying ? (
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                ) : (
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                )}
-            </button>
-            <input 
-                type="range" 
-                min="0" 
-                max="1" 
-                step="0.1" 
-                value={volume} 
-                onChange={(e) => setVolume(parseFloat(e.target.value))} 
-                className="w-16 h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer accent-yellow-700" 
-                title="Volume"
-            />
-        </div>
-    </div>
-  );
-};
-
-// --- COMPONENT: Scene Display ---
-const SceneDisplay = ({ sceneData }: { sceneData?: { visual_prompt: string, style?: string, imageUrl?: string } }) => {
-  if (!sceneData) return null;
-
-  // Lógica de fallback para Unsplash se não houver imageUrl gerada
-  let bgUrl = sceneData.imageUrl;
-  
-  if (!bgUrl) {
-    bgUrl = "https://images.unsplash.com/photo-1519074069444-1ba4fff66d16?q=80&w=2544&auto=format&fit=crop"; 
-    const p = sceneData.visual_prompt.toLowerCase();
-    if (p.includes("tavern") || p.includes("taverna")) bgUrl = "https://images.unsplash.com/photo-1572061486716-4354228c2e68";
-    if (p.includes("dungeon") || p.includes("masmorra")) bgUrl = "https://images.unsplash.com/photo-1518709268805-4e9042af9f23";
-    if (p.includes("city") || p.includes("cidade") || p.includes("porto") || p.includes("harbor") || p.includes("mirros")) bgUrl = "https://images.unsplash.com/photo-1533035339906-8b226e6e6f1f";
-  }
-
-  return (
-    <div className="relative w-full h-48 md:h-64 rounded-xl overflow-hidden mb-6 shadow-2xl border border-stone-800 group transition-all duration-1000">
-      {/* Imagem de Fundo com key={bgUrl} para reiniciar a animação ao trocar de cenário */}
-      <img key={bgUrl} src={bgUrl} alt="Cenário" className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity duration-700 animate-fade-in" />
-      
-      {/* Gradiente para texto legível */}
-      <div className="absolute inset-0 bg-gradient-to-t from-[#121212] via-transparent to-transparent"></div>
-      
-      {/* Descrição Artística (Prompt) aparecendo sutilmente */}
-      <div className="absolute bottom-0 left-0 p-4 w-full">
-         <p className="text-[10px] uppercase tracking-widest text-yellow-600/80 font-bold mb-1">Localização Atual</p>
-         <p className="text-sm text-stone-200 font-serif italic drop-shadow-md line-clamp-2">
-           {sceneData.visual_prompt}
-         </p>
-      </div>
-    </div>
-  );
-};
-
-// --- Main App Component ---
-
-const App = () => {
-    const [messages, setMessages] = useState<Message[]>([INITIAL_MESSAGE]);
-    const [isMusicPlaying, setIsMusicPlaying] = useState(false);
-    
-    // Atualizado para incluir imageUrl no estado do cenário
-    const [currentScene, setCurrentScene] = useState<{ visual_prompt: string, style?: string, imageUrl?: string } | undefined>(
-        INITIAL_MESSAGE.gameResponse?.update_scene ? { ...INITIAL_MESSAGE.gameResponse.update_scene, imageUrl: undefined } : undefined
-    );
-    
-    const [status, setStatus] = useState<GameStatus>({
-        nome: "Desconhecido", 
-        titulo: "Viajante", 
-        hp_atual: 10, 
-        hp_max: 10, 
-        armor_class: 10, 
-        local: "Porto de Mirros", 
-        missao: "Entrar na Cidade", 
-        inventario: [], 
-        atributos: undefined,
-        grupo: [],
-        talentos: [],
-        missoes_ativas: [], // Initialize empty missions
-        reputacao: { thyatis: 0, traladara: 0 } // Initialize factions
-    });
-    const [inputText, setInputText] = useState("");
-    const [isLoading, setIsLoading] = useState(false);
-    const [inputMode, setInputMode] = useState<"texto_livre" | "botoes" | "rolagem" | "formulario" | "selecao_fichas">("botoes");
-    const [allowFreeInput, setAllowFreeInput] = useState(true); 
-    const [currentOptions, setCurrentOptions] = useState<Option[]>(INITIAL_BUTTONS);
-    const [currentFormSchema, setCurrentFormSchema] = useState<FormSchema | null>(null);
-    const [lootNotification, setLootNotification] = useState<ItemObtainedData | null>(null);
-    const [quickActions, setQuickActions] = useState<string[]>([]);
-    
-    // Inventory Menu State
-    const [activeItemMenu, setActiveItemMenu] = useState<{ item: string, x: number, y: number } | null>(null);
-
-    // Floating Text State (Damage/Heal numbers)
-    const [floatingTexts, setFloatingTexts] = useState<{id: number, text: string, color: string}[]>([]);
-    const prevHpRef = useRef(status.hp_atual);
-
-    const [charCreationContext, setCharCreationContext] = useState<{userClass?: string, method?: string} | undefined>(undefined);
-
-    // Audio State
-    const [isAudioEnabled, setIsAudioEnabled] = useState(false);
-    const [volume, setVolume] = useState(0.5); 
-    const [isSpeaking, setIsSpeaking] = useState(false);
-    const audioContextRef = useRef<AudioContext | null>(null);
-    const gainNodeRef = useRef<GainNode | null>(null);
-
-    const messagesEndRef = useRef<HTMLDivElement>(null);
-
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-
-    // --- Persistence (Save/Load) ---
-    useEffect(() => {
-        const savedData = localStorage.getItem("karameikos_save_v1");
-        if (savedData) {
-            try {
-                const parsed = JSON.parse(savedData);
-                if (parsed.messages && parsed.messages.length > 0) setMessages(parsed.messages);
-                if (parsed.status) setStatus(parsed.status);
-            } catch (e) {
-                console.error("Erro ao carregar save:", e);
-            }
-        }
-    }, []);
-
-    useEffect(() => {
-        if (messages.length > 1) {
-            const saveData = {
-                messages,
-                status,
-                timestamp: Date.now()
-            };
-            localStorage.setItem("karameikos_save_v1", JSON.stringify(saveData));
-        }
-    }, [messages, status]);
-
-    useEffect(() => {
-        scrollToBottom();
-    }, [messages, inputMode, allowFreeInput]);
-
-    // Handle Floating Damage Text Logic
-    useEffect(() => {
-        const diff = status.hp_atual - prevHpRef.current;
-        if (diff !== 0) {
-             const id = Date.now();
-             const text = diff > 0 ? `+${diff}` : `${diff}`;
-             const color = diff > 0 ? 'text-green-400' : 'text-red-500';
-             setFloatingTexts(prev => [...prev, { id, text, color }]);
-             // Remove text after animation completes
-             setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== id)), 2000);
-        }
-        prevHpRef.current = status.hp_atual;
-    }, [status.hp_atual]);
-
-    // Initialize Audio Context on user interaction (handled in toggle)
-    useEffect(() => {
-        if (gainNodeRef.current) {
-            gainNodeRef.current.gain.value = volume;
-        }
-    }, [volume]);
-
-    const handleResetGame = () => {
-        if (window.confirm("Tens a certeza? Todo o progresso será perdido e a história reiniciada.")) {
-            localStorage.removeItem("karameikos_save_v1");
-            window.location.reload();
-        }
-    };
-
-    const handleItemAction = (action: "usar" | "examinar" | "descartar", item: string) => {
-        setActiveItemMenu(null); 
-        
-        let prompt = "";
-        switch(action) {
-            case "usar":
-                prompt = `[SISTEMA: O jogador tenta USAR o item "${item}". Descreva o efeito mecânico e narrativo.]`;
-                break;
-            case "examinar":
-                prompt = `[SISTEMA: O jogador EXAMINA detalhadamente o item "${item}".]`;
-                break;
-            case "descartar":
-                prompt = `[SISTEMA: O jogador DESCARTA o item "${item}" no chão.]`;
-                break;
-        }
-        handleSendMessage(prompt);
-    };
-
-    const playTTS = async (text: string) => {
-        if (!isAudioEnabled) return;
-
-        try {
-            if (!audioContextRef.current) {
-                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-                gainNodeRef.current = audioContextRef.current.createGain();
-                gainNodeRef.current.connect(audioContextRef.current.destination);
-                gainNodeRef.current.gain.value = volume;
-            }
-
-            if (audioContextRef.current.state === 'suspended') {
-                await audioContextRef.current.resume();
-            }
-
-            setIsSpeaking(true);
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            
-            if (!text) {
-                setIsSpeaking(false);
-                return;
-            }
-
-            const response = await ai.models.generateContent({
-                model: TTS_MODEL_NAME,
-                contents: [{ parts: [{ text: text }] }],
-                config: {
-                    responseModalities: [Modality.AUDIO],
-                    speechConfig: {
-                        voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: 'Fenrir' }, 
-                        },
-                    },
-                },
-            });
-
-            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (base64Audio && audioContextRef.current && gainNodeRef.current) {
-                const audioBuffer = await decodePCM(
-                    decode(base64Audio),
-                    audioContextRef.current,
-                    24000,
-                    1
-                );
-                const source = audioContextRef.current.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(gainNodeRef.current);
-                source.start();
-                source.onended = () => setIsSpeaking(false);
-            } else {
-                setIsSpeaking(false);
-            }
-        } catch (error) {
-            console.error("TTS Error:", error);
-            setIsSpeaking(false);
-        }
-    };
-
-    const handleSendMessage = async (text: string) => {
-        if (!text || !text.trim()) return;
-
-        const userMsg: Message = { id: Date.now().toString(), role: "user", text };
-        setMessages(prev => [...prev, userMsg]);
-        setInputText("");
-        setIsLoading(true);
-        setInputMode("texto_livre"); 
-
-        try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            
-            const history = messages.map(m => {
-               return { role: m.role, parts: [{ text: m.text }] };
-            });
-
-            history.push({ role: "user", parts: [{ text: text }] });
-
-            const response = await ai.models.generateContent({
-                model: MODEL_NAME,
-                contents: history,
-                config: {
-                    systemInstruction: SYSTEM_INSTRUCTION,
-                }
-            });
-
-            const responseText = response.text || "";
-            
-            // --- ROBUST PARSING LOGIC ---
-            let gameResponse: GameResponse | null = null;
-            let narrative = responseText;
-
-            // 1. Try to split by the separator defined in prompt
-            const splitParts = responseText.split("--- [JSON_DATA] ---");
-            if (splitParts.length > 1) {
-                narrative = splitParts[0].trim();
-                const jsonPart = splitParts[1].trim();
-                try {
-                    // Clean potential markdown around json
-                    const cleanJson = jsonPart.replace(/```json/g, "").replace(/```/g, "").trim();
-                    gameResponse = JSON.parse(cleanJson) as GameResponse;
-                } catch (e) { console.error("Failed to parse split JSON", e); }
-            } else {
-                // 2. Fallback: Try to find a JSON block via Regex if separator missing
-                const jsonMatch = responseText.match(/```json([\s\S]*?)```/);
-                if (jsonMatch) {
-                    try {
-                        gameResponse = JSON.parse(jsonMatch[1].trim()) as GameResponse;
-                        // Remove JSON from narrative to avoid duplication
-                        narrative = responseText.replace(jsonMatch[0], "").trim();
-                    } catch (e) { console.error("Failed to parse regex JSON", e); }
-                }
-            }
-            
-            // CLEANUP: Remove system tags from narrative if they leaked
-            narrative = narrative
-                .replace(/\[update_scene\]:.*$/gim, "")
-                .replace(/\[update_avatar\]:.*$/gim, "")
-                .trim();
-
-            // --- PROCESS GAME STATE ---
-            let finalOptions: Option[] = [];
-            let finalForm: FormSchema | null = null;
-            let nextMode: "texto_livre" | "botoes" | "rolagem" | "formulario" | "selecao_fichas" = "texto_livre";
-            let nextAllowInput = false;
-            let imageUrl: string | undefined = undefined;
-
-            if (gameResponse) {
-                // Status Update
-                if (gameResponse.status_jogador) {
-                    setStatus(prev => ({ 
-                        ...prev, 
-                        ...gameResponse!.status_jogador, 
-                        combat: gameResponse!.combat_state 
-                    }));
-                } else if (gameResponse.combat_state) {
-                    setStatus(prev => ({ ...prev, combat: gameResponse!.combat_state }));
-                }
-
-                // Loot Notification Trigger
-                if (gameResponse.game_event?.type === 'item_obtained') {
-                    setLootNotification(gameResponse.game_event.data as ItemObtainedData);
-                    setTimeout(() => setLootNotification(null), 4000);
-                }
-                
-                // Quick Actions Update
-                if (gameResponse.quick_actions) {
-                    setQuickActions(gameResponse.quick_actions);
-                } else {
-                    setQuickActions([]);
-                }
-
-                // SCENE UPDATE (Background) with AI Generation
-                if (gameResponse.update_scene?.trigger) {
-                    // Optimistic update using Unsplash fallback initially
-                    setCurrentScene({
-                        visual_prompt: gameResponse.update_scene.visual_prompt,
-                        style: gameResponse.update_scene.style,
-                        imageUrl: undefined 
-                    });
-
-                    // Trigger Image Generation
-                    const scenePrompt = `Fantasy RPG Environment, ${gameResponse.update_scene.style || "Cinematic, Detailed"}, ${gameResponse.update_scene.visual_prompt}`;
-                    
-                    try {
-                        ai.models.generateContent({
-                            model: IMAGE_MODEL_NAME,
-                            contents: [{ parts: [{ text: scenePrompt }] }]
-                        }).then(sceneRes => {
-                             const part = sceneRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-                             if (part) {
-                                 const base64Img = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                                 setCurrentScene(prev => prev ? { ...prev, imageUrl: base64Img } : undefined);
-                             }
-                        }).catch(e => console.error("Scene Gen Error", e));
-                        
-                    } catch (e) {
-                        console.error("Scene Gen Init Error", e);
-                    }
-                }
-
-                // Visual Update (Avatar)
-                if (gameResponse.update_avatar?.trigger && gameResponse.update_avatar.visual_prompt) {
-                     const avatarPrompt = "Fantasy RPG Portrait, " + gameResponse.update_avatar.visual_prompt;
-                     try {
-                        const avatarRes = await ai.models.generateContent({
-                            model: IMAGE_MODEL_NAME,
-                            contents: [{ parts: [{ text: avatarPrompt }] }]
-                        });
-                        const part = avatarRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-                        if (part) {
-                            setStatus(prev => ({ ...prev, avatarUrl: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` }));
-                        }
-                     } catch(e) { console.error("Avatar Gen Error", e); }
-                }
-
-                // Snapshot Image Hook (Narrative attachment) - kept for action shots if no scene update
-                if (!gameResponse.update_scene?.trigger && narrative.length > 50 && Math.random() > 0.7) {
-                     const scenePrompt = "Dark fantasy rpg landscape, " + narrative.substring(0, 100);
-                     try {
-                        const imgRes = await ai.models.generateContent({
-                            model: IMAGE_MODEL_NAME,
-                            contents: [{ parts: [{ text: scenePrompt }] }]
-                        });
-                        const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-                        if (part) {
-                            imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                        }
-                     } catch (e) { console.error("Scene Gen Error", e); }
-                }
-
-                // Interface Update
-                if (gameResponse.interface) {
-                    nextMode = gameResponse.interface.modo;
-                    nextAllowInput = !!gameResponse.interface.permitir_input_livre;
-                    
-                    if (nextMode === 'botoes') {
-                        if (Array.isArray(gameResponse.interface.conteudo) && gameResponse.interface.conteudo.length > 0) {
-                            finalOptions = gameResponse.interface.conteudo as Option[];
-                        } else {
-                            finalOptions = [{ label: "Continuar", value: "Continuar" }];
-                        }
-                    } else if (nextMode === 'formulario' && gameResponse.interface.conteudo) {
-                        // Assuming the content passed for form is the schema
-                        finalForm = gameResponse.interface.conteudo as unknown as FormSchema;
-                    }
-                }
-            }
-
-            const modelMsg: Message = {
-                id: Date.now().toString(),
-                role: "model",
-                text: narrative,
-                gameResponse: gameResponse || undefined,
-                options: finalOptions,
-                imageUrl: imageUrl,
-                form: finalForm || undefined
-            };
-
-            setMessages(prev => [...prev, modelMsg]);
-            setInputMode(nextMode);
-            setAllowFreeInput(nextAllowInput);
-            
-            playTTS(narrative);
-
-            if (nextMode === 'botoes') {
-                setCurrentOptions(finalOptions);
-            } else {
-                setCurrentOptions([]);
-            }
-
-            if (finalForm) setCurrentFormSchema(finalForm);
-
-        } catch (error) {
-            console.error("API Error", error);
-            const errorMsg: Message = {
-                id: Date.now().toString(),
-                role: "model",
-                text: "O tecido da realidade tremeu (Erro de API). Tente novamente."
-            };
-            setMessages(prev => [...prev, errorMsg]);
-            setInputMode("texto_livre");
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleSystemAction = (text: string) => {
-        handleSendMessage(text);
-    };
-
-    const handleFormSubmit = (values: Record<string, string | string[]>) => {
-        if (values.classe && values.atributos) {
-            setCharCreationContext({
-                userClass: values.classe as string,
-                method: values.atributos as string
-            });
-        }
-        const valueString = JSON.stringify(values);
-        handleSendMessage(`[SISTEMA: Ficha preenchida: ${valueString}]`);
-    };
-
-    const handlePregenSelect = (char: PregenCharacter) => {
-        // Send a system message to the AI indicating the choice
-        const msg = `[SISTEMA: O jogador escolheu a ficha pronta: ${char.nome}, ${char.raca}, ${char.classe}. Stats: For${char.stats.for}, Des${char.stats.des}, Con${char.stats.con}, Int${char.stats.int}, Sab${char.stats.sab}, Car${char.stats.car}. Equip: ${char.equip.join(', ')}. O jogador assumiu essa identidade. Continue a história no Passo 4.]`;
-        handleSendMessage(msg);
-    };
-    
-    const renderInputArea = () => (
-        <div className="flex gap-2 max-w-4xl mx-auto w-full">
-            <input
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage(inputText)}
-                placeholder="O que você faz?"
-                disabled={isLoading}
-                className="flex-1 bg-stone-900 border border-stone-700 text-stone-200 p-3 rounded focus:border-yellow-700 outline-none font-serif"
-            />
-            <button
-                onClick={() => handleSendMessage(inputText)}
-                disabled={isLoading || !inputText.trim()}
-                className="bg-yellow-900/30 text-yellow-600 border border-yellow-800/50 px-6 rounded font-bold hover:bg-yellow-900/50 disabled:opacity-50 transition-colors uppercase tracking-widest text-sm"
-            >
-                Enviar
-            </button>
-        </div>
-    );
-
-    return (
-        <div className="h-screen w-screen flex flex-col bg-[#1a1816] text-[#d1c4b2] overflow-hidden font-sans">
-            {/* TOP BAR (Header) */}
-            <header className="h-16 flex-none bg-[#0e0c0a] border-b border-[#3e352f] flex items-center justify-between px-6 shadow-xl z-20">
-                <div className="flex flex-col">
-                    <h1 className="text-yellow-600 font-fantasy text-lg tracking-wider">Crônicas de Karameikos</h1>
-                    <div className="flex items-center gap-2 text-xs text-stone-400">
-                        <span className="uppercase font-bold tracking-widest">{status.local}</span>
-                        {status.missao && <span className="text-stone-600">| {status.missao}</span>}
-                    </div>
-                </div>
-
-                <div className="flex items-center gap-4">
-                    {/* Audio Controller moved to Top Bar */}
-                    <AudioController 
-                        isPlaying={isMusicPlaying} 
-                        setIsPlaying={setIsMusicPlaying} 
-                        volume={volume}
-                        setVolume={setVolume}
-                        isAudioEnabled={isAudioEnabled}
-                        setIsAudioEnabled={setIsAudioEnabled}
-                    />
-                    
-                    <div className="h-6 w-px bg-stone-700 mx-2"></div>
-
-                    <button 
-                        onClick={handleResetGame} 
-                        className="text-stone-500 hover:text-red-500 transition-colors text-xs uppercase tracking-widest hover:underline"
-                    >
-                        Reiniciar
-                    </button>
-                </div>
-            </header>
-
-            <div className="flex-1 flex overflow-hidden">
-                {/* FIXED LEFT SIDEBAR (Character Sheet) */}
-                <aside className="hidden md:flex flex-col w-80 border-r border-[#3e352f] bg-[#141210] p-4 gap-4 overflow-y-auto z-10 shadow-xl">
-                    <div className="flex flex-col items-center gap-2 mb-2 border-b border-[#2a2622] pb-4">
-                        <div className="w-32 h-32 rounded-full border-2 border-yellow-900 overflow-hidden bg-black shadow-lg relative">
-                            {status.avatarUrl ? (
-                                <img src={status.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
-                            ) : (
-                                <div className="w-full h-full flex items-center justify-center text-4xl text-stone-700">?</div>
-                            )}
-                            {floatingTexts.map(ft => (
-                                <div key={ft.id} className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-4xl font-bold font-fantasy drop-shadow-md pointer-events-none animate-float-up ${ft.color}`} style={{ textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
-                                    {ft.text}
-                                </div>
-                            ))}
-                        </div>
-                        <h2 className="font-fantasy text-xl text-yellow-600">{status.nome}</h2>
-                        <span className="text-xs uppercase tracking-widest text-stone-500">{status.titulo}</span>
-                    </div>
-
-                    <div className="space-y-4">
-                        {/* Stats */}
-                        <div className="flex gap-2 items-end">
-                            <div className="flex-1">
-                                <div className="flex justify-between text-xs uppercase font-bold text-stone-500 mb-1">
-                                    <span>Vitalidade</span>
-                                    <span>{status.hp_atual}/{status.hp_max}</span>
-                                </div>
-                                <div className="h-2 bg-stone-800 rounded-full overflow-hidden border border-stone-700/50">
-                                    <div 
-                                        className="h-full bg-red-900 transition-all duration-500 shadow-[0_0_10px_rgba(153,27,27,0.5)]" 
-                                        style={{ width: `${(status.hp_atual / status.hp_max) * 100}%`}}
-                                    ></div>
-                                </div>
-                            </div>
-                            
-                            <div className="flex flex-col items-center justify-center bg-[#2a2622] border border-stone-600 rounded px-2 py-1 min-w-[3.5rem] shadow-inner">
-                                <span className="text-[9px] text-stone-500 font-bold uppercase tracking-widest mb-0.5">Defesa</span>
-                                <div className="flex items-center gap-1">
-                                    <svg className="w-3 h-3 text-stone-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>
-                                    <span className="text-xl font-fantasy text-stone-200">{status.armor_class || 10}</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* New Talents Section */}
-                        {status.talentos && status.talentos.length > 0 && (
-                            <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
-                                <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Talentos</h4>
-                                <div className="flex flex-wrap gap-1">
-                                    {status.talentos.map((t, i) => (
-                                        <span key={i} className="text-[10px] bg-stone-800 text-stone-300 px-2 py-1 rounded border border-stone-700">{t}</span>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* INVENTORY SECTION */}
-                        <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f] relative">
-                            <h4 className="text-xs uppercase font-bold text-stone-500 mb-2 flex justify-between">
-                                <span>Mochila</span>
-                                <span className="text-[10px] text-stone-600 font-normal normal-case italic">(Clique para ações)</span>
-                            </h4>
-                            <div className="flex flex-wrap gap-2">
-                                {status.inventario?.map((item, i) => (
-                                    <button 
-                                        key={i} 
-                                        onClick={(e) => {
-                                            const rect = e.currentTarget.getBoundingClientRect();
-                                            setActiveItemMenu({ item, x: rect.left, y: rect.bottom + 5 });
-                                        }} 
-                                        className="text-xs bg-black/40 border border-stone-700 px-2 py-1 rounded text-stone-300 hover:border-yellow-700 hover:text-yellow-200 transition-all cursor-pointer flex items-center gap-1"
-                                    >
-                                        {item}
-                                    </button>
-                                ))}
-                                {(!status.inventario || status.inventario.length === 0) && <span className="text-xs text-stone-600 italic">Vazio</span>}
-                            </div>
-
-                            {activeItemMenu && (
-                                <>
-                                    <div className="fixed inset-0 z-40" onClick={() => setActiveItemMenu(null)}></div>
-                                    <div 
-                                        className="fixed z-50 bg-[#2a2622] border border-yellow-700/50 shadow-2xl rounded-lg py-1 w-32 flex flex-col animate-fade-in text-sm"
-                                        style={{ top: activeItemMenu.y, left: activeItemMenu.x }}
-                                    >
-                                        <div className="px-3 py-1 text-[10px] uppercase font-bold text-stone-500 border-b border-stone-700 mb-1 truncate">
-                                            {activeItemMenu.item}
-                                        </div>
-                                        <button onClick={() => handleItemAction('usar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-stone-200 hover:bg-yellow-900/40 hover:text-yellow-400 transition-colors">✨ Usar</button>
-                                        <button onClick={() => handleItemAction('examinar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-stone-200 hover:bg-yellow-900/40 hover:text-yellow-400 transition-colors">🔍 Examinar</button>
-                                        <button onClick={() => handleItemAction('descartar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-red-400 hover:bg-red-900/20 hover:text-red-300 transition-colors border-t border-stone-700 mt-1">🗑️ Descartar</button>
-                                    </div>
-                                </>
-                            )}
-                        </div>
-
-                        {/* QUESTS SECTION */}
-                        <div className="mt-4 border-t border-yellow-900/30 pt-4">
-                            <h4 className="text-[10px] uppercase font-bold text-stone-500 mb-3 flex items-center gap-2">
-                                <span>📜 Missões</span>
-                                <span className="h-[1px] flex-1 bg-stone-800"></span>
-                            </h4>
-                            <div className="space-y-2">
-                                {status.missoes_ativas && status.missoes_ativas.length > 0 ? (
-                                    status.missoes_ativas.map((quest, idx) => (
-                                        <div key={quest.id || idx} className="bg-[#141210] p-2 rounded border border-stone-800">
-                                            <div className="flex justify-between items-center mb-1">
-                                                <span className={`text-xs font-bold ${quest.status === 'completa' ? 'text-green-500 line-through' : quest.status === 'falha' ? 'text-red-500' : 'text-yellow-600'}`}>{quest.titulo}</span>
-                                                <span className="text-[9px] uppercase tracking-wide text-stone-600">{quest.status}</span>
-                                            </div>
-                                            <p className="text-[10px] text-stone-400 leading-tight">{quest.descricao}</p>
-                                        </div>
-                                    ))
-                                ) : (
-                                    <div className="text-center py-2 opacity-50">
-                                        <p className="text-[10px] text-stone-600 italic">Nenhuma missão ativa.</p>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        <DividerDecoration />
-
-                        {/* GROUP / COMPANIONS SECTION */}
-                        <div className="mt-4 border-t border-yellow-900/30 pt-4">
-                            <h4 className="text-[10px] uppercase font-bold text-stone-500 mb-3 flex items-center gap-2">
-                                <span>🛡️ Grupo</span>
-                                <span className="h-[1px] flex-1 bg-stone-800"></span>
-                            </h4>
-                            
-                            <div className="space-y-2">
-                                {status.grupo && status.grupo.length > 0 ? (
-                                    status.grupo.map((npc, idx) => (
-                                        <div key={idx} className="flex items-center gap-3 bg-black/20 p-2 rounded border border-stone-800/50 hover:border-stone-600 transition-colors group">
-                                            {/* Avatar do NPC */}
-                                            <div className="w-8 h-8 rounded-full bg-stone-700 flex items-center justify-center border border-stone-600 shadow-sm relative overflow-hidden">
-                                                {npc.avatar ? (
-                                                    <img src={npc.avatar} className="w-full h-full object-cover" />
-                                                ) : (
-                                                    <span className="text-xs font-fantasy text-stone-300">{npc.nome.charAt(0)}</span>
-                                                )}
-                                                <div className={`absolute bottom-0 right-0 w-2 h-2 rounded-full border border-black ${npc.status === 'Vivo' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                                            </div>
-                                            
-                                            <div className="flex flex-col">
-                                                <span className="text-xs font-bold text-stone-300 group-hover:text-yellow-100 transition-colors">
-                                                    {npc.nome}
-                                                </span>
-                                                <span className="text-[9px] text-stone-500 uppercase tracking-wide">
-                                                    {npc.classe}
-                                                </span>
-                                            </div>
-
-                                            <button 
-                                                onClick={() => handleSendMessage(`[SISTEMA: O jogador interage com ${npc.nome}.] O que você acha disso, ${npc.nome}?`)}
-                                                className="ml-auto opacity-0 group-hover:opacity-100 text-stone-400 hover:text-white transition-opacity"
-                                                title="Conversar"
-                                            >
-                                                💬
-                                            </button>
-                                        </div>
-                                    ))
-                                ) : (
-                                    <div className="text-center py-4 opacity-50">
-                                        <p className="text-[10px] text-stone-600 italic">Você viaja sozinho... por enquanto.</p>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </aside>
-
-                {/* Main Chat Area */}
-                <div className="flex-1 flex flex-col relative bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')]">
-                    {lootNotification && <LootToast item={lootNotification} />}
-                    {status.combat && <CombatTracker combatState={status.combat} />}
-
-                    <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
-                        {/* Scene Display (Imersive Background Banner) */}
-                        {currentScene && <SceneDisplay sceneData={currentScene} />}
-
-                        {messages.map((msg, idx) => (
-                            <MessageItem 
-                                key={msg.id} 
-                                msg={msg} 
-                                isLast={idx === messages.length - 1} 
-                            />
-                        ))}
-                        {inputMode === 'formulario' && currentFormSchema && (
-                            <DynamicForm 
-                                schema={currentFormSchema} 
-                                onSubmit={handleFormSubmit}
-                                context={charCreationContext} 
-                            />
-                        )}
-                        {inputMode === 'selecao_fichas' && (
-                             <PregenSelector onSelect={handlePregenSelect} />
-                        )}
-                        {isLoading && (
-                            <div className="flex justify-start animate-pulse mt-4">
-                                <div className="flex items-center gap-2 bg-[#1e1c19] px-4 py-2 rounded-full border border-[#3e352f] text-stone-500 font-serif italic text-xs">
-                                    <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce"></div>
-                                    <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce delay-75"></div>
-                                    <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce delay-150"></div>
-                                    O Destino está sendo escrito...
-                                </div>
-                            </div>
-                        )}
-                        <div ref={messagesEndRef} />
-                    </div>
-
-                    {/* Input Area */}
-                    <div className="p-4 bg-[#141210] border-t border-[#3e352f] shadow-[0_-5px_20px_rgba(0,0,0,0.5)] z-20">
-                        <QuickActions actions={quickActions} onActionClick={handleSendMessage} />
-                        
-                        {inputMode === 'rolagem' ? (
-                            <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center py-4">
-                                Rolagem Necessária
-                            </div>
-                        ) : inputMode === 'botoes' ? (
-                            <div className="flex flex-col gap-4 w-full">
-                                <div className="flex flex-wrap gap-2 justify-center animate-fade-in">
-                                    {currentOptions.map((opt, idx) => (
-                                        <button
-                                            key={idx}
-                                            onClick={() => handleSendMessage(opt.value)}
-                                            className="group relative bg-stone-800 hover:bg-[#2a2622] border border-stone-600 hover:border-yellow-700 px-5 py-3 rounded text-left flex flex-col min-w-[200px] transition-all hover:-translate-y-1 shadow-lg overflow-hidden"
-                                        >
-                                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-yellow-900/10 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
-                                            <span className="text-yellow-500 font-bold text-sm font-fantasy tracking-wide relative z-10">{opt.label}</span>
-                                            {opt.sub && <span className="text-stone-500 text-xs italic relative z-10">{opt.sub}</span>}
-                                        </button>
-                                    ))}
-                                </div>
-                                {allowFreeInput && renderInputArea()}
-                            </div>
-                        ) : inputMode === 'formulario' ? (
-                            <div className="text-center text-stone-500 text-xs uppercase tracking-widest py-3 opacity-60">
-                                Preencha o pergaminho acima
-                            </div>
-                         ) : inputMode === 'selecao_fichas' ? (
-                            <div className="text-center text-stone-500 text-xs uppercase tracking-widest py-3 opacity-60">
-                                Escolha seu destino acima
-                            </div>
-                        ) : (
-                            renderInputArea()
-                        )}
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// Mount the App
-const container = document.getElementById('root');
-const root = createRoot(container!);
-root.render(<App />);
