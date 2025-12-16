@@ -100,12 +100,15 @@ type GameResponse = {
     game_event?: GameEvent;
     quick_actions?: string[];
     update_avatar?: { trigger: boolean; visual_prompt: string };
-    // Engine de Cenários: Gera imagem panorâmica ao mudar de local
+    
+    // NOVO CAMPO: Engine de Cenários
+    // A ideia é que, quando o jogador muda de local (ex: entra numa taverna), o jogo gere uma imagem panorâmica de fundo.
     update_scene?: { 
         trigger: boolean; 
         visual_prompt: string; // Descrição do ambiente (Ex: "Dark foggy medieval harbor...")
         style?: string; 
     };
+    
     interface?: {
         modo: "texto_livre" | "botoes" | "rolagem" | "formulario";
         permitir_input_livre?: boolean;
