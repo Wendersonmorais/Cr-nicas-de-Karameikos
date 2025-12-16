@@ -26,6 +26,18 @@ type FormSchema = {
     fields: FormField[];
 };
 
+type PregenCharacter = {
+    id: string;
+    nome: string;
+    raca: string;
+    classe: string;
+    stats: { for: number; des: number; con: number; int: number; sab: number; car: number };
+    hp: number;
+    equip: string[];
+    desc: string;
+    role: string; // Tank, DPS, Healer, Utility
+};
+
 type ItemObtainedData = {
     item_name: string;
     quantity: number;
@@ -78,6 +90,13 @@ interface GroupMember {
   raca?: string; 
 }
 
+interface Quest {
+  id: string;
+  titulo: string;
+  descricao: string;
+  status: "ativa" | "completa" | "falha";
+}
+
 type GameStatus = {
     nome: string;
     titulo: string;
@@ -91,6 +110,9 @@ type GameStatus = {
     combat?: CombatState;
     avatarUrl?: string;
     grupo?: GroupMember[]; // Lista de companheiros
+    talentos?: string[]; // Novos Talentos Regionais
+    missoes_ativas?: Quest[];
+    reputacao?: { thyatis: number; traladara: number }; // Novo Sistema de Facções
 };
 
 type GameResponse = {
@@ -110,9 +132,9 @@ type GameResponse = {
     };
     
     interface?: {
-        modo: "texto_livre" | "botoes" | "rolagem" | "formulario";
+        modo: "texto_livre" | "botoes" | "rolagem" | "formulario" | "selecao_fichas";
         permitir_input_livre?: boolean;
-        conteudo?: Option[] | FormSchema;
+        conteudo?: Option[] | FormSchema; // Para 'selecao_fichas', o conteudo é ignorado e usamos a const PREGEN
     };
 };
 
@@ -124,6 +146,7 @@ type Message = {
     options?: Option[];
     imageUrl?: string;
     form?: FormSchema;
+    showPregen?: boolean;
 };
 
 // --- Constants ---
@@ -132,109 +155,176 @@ const MODEL_NAME = "gemini-2.5-flash";
 const TTS_MODEL_NAME = "gemini-2.5-flash-preview-tts";
 const IMAGE_MODEL_NAME = "gemini-2.5-flash-image";
 
+// Dados extraídos do PDF "Mystara - Karameikos Fichas" e adaptados para 5e
+const PREGEN_CHARACTERS: PregenCharacter[] = [
+    {
+        id: "001",
+        nome: "Valerius Vorloi",
+        raca: "Humano (Thyatiano)",
+        classe: "Guerreiro (Cavaleiro)",
+        stats: { for: 16, des: 10, con: 15, int: 10, sab: 13, car: 14 },
+        hp: 12,
+        equip: ["Espada Longa", "Escudo com Brasão", "Cota de Malhas", "Kit de Viajante"],
+        desc: "Nobreza decaída, busca restaurar a honra da família. Disciplinado e leal ao Duque.",
+        role: "🛡️ Tanque / Defensivo"
+    },
+    {
+        id: "002",
+        nome: "Dmitri Torenescu",
+        raca: "Humano (Traladarano)",
+        classe: "Ladino (Lâmina)",
+        stats: { for: 10, des: 16, con: 12, int: 14, sab: 13, car: 15 },
+        hp: 9,
+        equip: ["Rapieira", "Adaga Curva", "Armadura de Couro", "Baralho de Tarokka"],
+        desc: "Cresceu nas ruas do 'Ninho'. Odeia a guarda da cidade. Rápido e mortal.",
+        role: "🗡️ Furtivo / Dano Rápido"
+    },
+    {
+        id: "003",
+        nome: "Syllina Argenthos",
+        raca: "Humana (Traladarana)",
+        classe: "Clérigo (Igreja de Karameikos)",
+        stats: { for: 13, des: 10, con: 14, int: 12, sab: 16, car: 14 },
+        hp: 10,
+        equip: ["Maça Estrela", "Cota de Escamas", "Símbolo Sagrado", "Unguentos"],
+        desc: "Missionária tentando apaziguar os ânimos entre os povos. Cura aliados e bane mortos-vivos.",
+        role: "❤️ Suporte / Cura"
+    },
+    {
+        id: "004",
+        nome: "Elara de Callarii",
+        raca: "Elfa (Floresta)",
+        classe: "Mago (Evocação)",
+        stats: { for: 8, des: 16, con: 12, int: 17, sab: 14, car: 10 },
+        hp: 7,
+        equip: ["Cajado de Carvalho", "Grimório Élfico", "Adaga", "Manto Verde"],
+        desc: "Uma emissária dos elfos de Radlebb. Sua magia é tão bela quanto mortal.",
+        role: "🔥 Controle Arcano"
+    },
+    {
+        id: "005",
+        nome: "Thorin Escudo-de-Ferro",
+        raca: "Anão (Forte)",
+        classe: "Guerreiro (Campeão)",
+        stats: { for: 17, des: 13, con: 16, int: 10, sab: 12, car: 8 },
+        hp: 13,
+        equip: ["Machado de Batalha", "Machadinha", "Cota de Malhas Pesada"],
+        desc: "Um mercenário das Montanhas Cruth. Fala pouco, bate forte.",
+        role: "⚔️ Dano Pesado"
+    }
+];
+
 const SYSTEM_INSTRUCTION = `
 **PERSONA:**
-Você é um Motor de Jogo (Game Engine) e Mestre de RPG narrando Karameikos (D&D 5e).
-Seu objetivo é criar uma introdução ORGÂNICA e CINEMATOGRÁFICA.
-**NÃO use menus de criação de ficha tradicionais no início.** Você deve descobrir quem o jogador é através de Cenas de Ação.
+Você é um Motor de Jogo (Game Engine) e Mestre de RPG narrando a campanha "Os Dracos de Karameikos" (D&D 5e).
+Seu estilo é "Grim Dark Fantasy", sensorial, perigoso e implacável.
+
+**CONTEXTO DA CAMPANHA: "OS DRACOS DE KARAMEIKOS"**
+A trama central envolve a busca por 6 ovos ancestrais chamados "Dracos".
+- **Vilão Principal:** Syndarion (Elfo Renegado) e Arthanax (Profeta do Culto do Dragão).
+- **Objetivo do Vilão:** Ressuscitar Tiamat.
+- **Base Inicial:** A cidade de Threshold, governada pelo Baron Sherlane Halaran.
+
+**DIRETRIZES DE NPCs (PRIORIDADE ALTA):**
+Sempre que o jogador estiver nos locais apropriados, use estes NPCs canônicos em vez de criar novos:
+1. **Em Threshold:** Baron Sherlane (Líder Sábio), Aleena Halaran (Clériga Bondosa).
+2. **Na Floresta Radlebb:** Doriath (Elfo Guardião).
+3. **Antagonistas:** Valkara (Meio-Dragão Assassina), Ignar (Dragão Vermelho Jovem).
+
+**MOTOR DE RUMORES (LORE INJECTION):**
+Sempre que o jogador estiver em locais sociais (Tavernas, Mercados, Praças, Guildas), calcule internamente uma chance (aprox. 20%). Se ocorrer, insira um rumor baseado nas "Missões Secundárias" na narrativa ambiental:
+- "Você ouve mercadores sussurrando sobre a 'Caravana Atacada' na estrada leste e mercadorias roubadas por goblins."
+- "Um velho fala com medo sobre a 'Estátua Misteriosa' em Verge que começou a brilhar e chorar sangue."
+- "Boatos de que o 'Anel de Ferro' (escravagistas) está sequestrando viajantes solitários perto do rio."
+- "Alguém comenta que viu luzes estranhas nas Ruínas de Koriszegy à noite."
+Apresente isso como "fofoca de fundo" (ambientação), não como um diálogo direto obrigatório, a menos que o jogador decida investigar.
+
+**IA TÁTICA DE COMBATE:**
+Ao narrar combates, NÃO apenas cause dano. Use as habilidades especiais dos monstros descritas no Manual dos Monstros ou Tome of Beasts.
+- Se for um **Kobold**, use "Táticas de Matilha" (Vantagem se tiver aliado perto).
+- Se for um **Dragão**, descreva o "Sopro" ou a "Aura de Medo" antes do dano.
+- Se for o vilão **Valkara (Meio-Dragão)**, use o Sopro Ácido descrito no Guia da Campanha.
+Torne o combate cinematográfico, descrevendo o impacto ambiental das habilidades.
+
+**EFEITO DE ARTEFATO (OS DRACOS):**
+Se o array 'inventario' contiver "Draco", "Ovo de Dragão" ou "Pedra do Dragão":
+- Narre sussurros mentais ocasionais (sedução de poder ou medo) ou sensações de calor/frio vindo da mochila.
+- Dragões Cromáticos e Cultistas do Dragão devem ser mais agressivos (eles sentem a presença mística do ovo).
+- Use o conhecimento de "Dragões Aliados de Tiamat" para decidir se um dragão é atraído pelo ovo durante viagens longas.
+
+**SISTEMA DE FACÇÕES (POLÍTICA DE KARAMEIKOS):**
+Monitore as ações do jogador e atualize o campo 'reputacao' no JSON.
+- **Thyatianos (Conquistadores):** O jogador ganha favor ao ajudar o Barão Sherlane, a Guarda ou o Duque Stefan.
+- **Traladaranos (Nativos):** O jogador ganha favor ao ajudar o povo comum, rebeldes ou ciganos Vistani.
+- **Consequência:** Isso muda preços em lojas e como NPCs reagem (preços dobram se a reputação for baixa com a facção do comerciante).
 
 **REGRA DE OURO (OUTPUT JSON):**
-Você deve SEMPRE responder com um objeto JSON válido contendo "narrative" e "game_event".
+Você deve SEMPRE responder com um objeto JSON válido.
+**IMPORTANTE:** NUNCA inclua tags de sistema (como [update_scene] ou [update_avatar]) no texto narrativo visível. Essas instruções devem ir APENAS dentro do JSON.
+Use o campo "status_jogador.missoes_ativas" para atualizar a lista de missões (Quests) do jogador.
 
-**DIRETRIZES DO DIRETOR DE ARTE (VISUAL ENGINE):**
-Você controla a imersão visual. Use os campos JSON para pedir imagens.
+**ROTEIRO DE INÍCIO DE JOGO (O CHAMADO):**
 
-1. **CENÁRIOS (update_scene):**
-   - ACIONE QUANDO: O jogador muda de local (entra numa sala, chega numa cidade, sai para a floresta).
-   - PROMPT: Descreva o ambiente, iluminação e clima. 
-   - Estilo: "Dark Fantasy Concept Art, Wide Angle, Atmospheric".
-   
-2. **PERSONAGENS (update_avatar):**
-   - ACIONE QUANDO: O jogador interage com um NPC importante ou vê seu próprio reflexo/equipamento novo.
-   - PROMPT: Foco no rosto/busto.
+**PASSO 1: A RESPOSTA AO BARÃO**
+- **Contexto:** O jogador está no Solar do Barão Halaran e acabou de escolher uma identidade (Guerreiro, Estudioso, Viajante).
+- **AÇÃO DO MESTRE:**
+  1. **Interprete a escolha:** Se o jogador disse "Sou um guerreiro...", gere automaticamente uma ficha de Guerreiro Nível 1. Se "Estudioso", Mago ou Ladino. Se "Viajante", Patrulheiro.
+  2. **Defina Atributos/Equipamento:** Preencha 'status_jogador' com base na escolha (Ex: Dê uma Espada da Família para o Guerreiro, ou um Mapa Antigo para o Estudioso).
+  3. **Narrativa:** O Barão aceita a ajuda.
+  4. **O Grupo:** Aleena Halaran (Clériga) e um Patrulheiro Elfo se juntam ao jogador para a missão.
+  5. **Missão:** "Investigar as Ruínas de Dymrak".
 
-**EXEMPLO JSON:**
-\`\`\`json
-{
-  "narrative": "...",
-  "update_scene": {
-      "trigger": true,
-      "visual_prompt": "Interior of a rowdy medieval tavern in Karameikos, warm firelight, wooden tables, shadows, smoke in the air.",
-      "style": "Oil Painting"
-  },
-  "status_jogador": { ... }
-}
-\`\`\`
-
-**ROTEIRO DO PRÓLOGO (Siga estes 4 passos estritamente):**
-
-**PASSO 1: O ESTRANHO (Identidade)**
-- Cena Atual: O jogador chega a Mirros (Capital). Um guarda ou oficial o aborda.
-- Objetivo: Perguntar o NOME e GÊNERO através de diálogo.
-- Interface: Use 'botoes' para [Homem] / [Mulher] ou 'texto_livre'.
-
-**PASSO 2: A VOCAÇÃO (Classe e Raça via Ação)**
-- Gatilho: Imediatamente após o jogador se identificar.
-- Cena: Um incidente súbito acontece (um roubo, uma carroça desgovernada, uma briga de bar).
-- Ação: Pergunte "Como você reage instintivamente?". Ofereça opções que mapeiem para CLASSES.
-  - Ex: "Bloquear o caminho com força" -> Define Guerreiro/Paladino.
-  - Ex: "Lançar um feitiço rápido" -> Define Mago/Feiticeiro.
-  - Ex: "Disparar um projétil ou se esconder" -> Define Patrulheiro/Ladino.
-  - Ex: "Clamar aos deuses" -> Define Clérigo.
-- Output: No JSON, narre a ação heroica e defina a Classe/Raça do jogador internamente.
-
-**PASSO 3: O POTENCIAL (Atributos)**
-- Cena: Um Mentor (NPC veterano que viu a ação) se aproxima impressionado.
-- Diálogo: "Você tem talento, [Nome]. Deixe-me ver do que é feito."
-- Interface: Ative 'interface.modo = "formulario"' com o schema de atributos.
-- **IMPORTANTE:** Preencha os placeholders do formulário com sugestões táticas para a classe que você acabou de descobrir (Ex: Se for Guerreiro, sugira Força alta).
-
-**PASSO 4: A IRMANDADE (O Grupo)**
-- Regra: O jogador nunca viaja sozinho. Imediatamente após a ficha estar pronta, apresente 3 NPCs que se juntam a ele.
-- Balanceamento Automático:
-  - Se Jogador = Guerreiro/Tanque, adicione: [Mago, Ladino, Clérigo].
-  - Se Jogador = Mago/Frágil, adicione: [Guerreiro, Patrulheiro, Clérigo].
-  - Se Jogador = Ladino, adicione: [Bárbaro, Clérigo, Feiticeiro].
-- Output: Preencha o campo 'status_jogador.grupo' no JSON com esses NPCs.
+**PASSO 2: A PARTIDA**
+- Após a formação do grupo, o jogo segue para a exploração ou combate imediato se houver uma emboscada na saída da cidade.
 
 **PROTOCOLO DE SAÍDA (OBRIGATÓRIO):**
 Termine SEMPRE com um bloco JSON oculto separado por "--- [JSON_DATA] ---".
 `;
 
-// Mensagem inicial limpa, sem botões de ficha pronta, jogando direto na cena.
+// Mensagem inicial com o Menu Principal contextualizado
 const INITIAL_MESSAGE: Message = {
     id: 'intro',
     role: 'model',
-    text: "A neblina salgada do porto de Mirros gruda na sua pele. Gaivotas gritam acima, competindo com o barulho dos estivadores descarregando caixas de especiarias thyatianas. Você caminha pela prancha de desembarque, sentindo a madeira ranger sob suas botas.\n\nUm guarda da cidade, com a tabarda azul do Duque Stefan manchada de gordura, bloqueia seu caminho com uma alabarda. Ele te olha de cima a baixo, os olhos semicerrados de desconfiança.\n\n— *Alto lá. Não deixamos qualquer um entrar na capital hoje em dia.* — Ele franze a testa, tentando discernir seu rosto sob o capuz. — *Identifique-se. Quem é você, viajante?*",
+    text: "O vento uiva sobre as muralhas de Threshold. Você está no salão comunal do Barão Sherlane Halaran. Mapas antigos estão espalhados sobre a mesa de carvalho.\n\n— *A lenda é real* — diz o Barão, com a voz pesada de preocupação. — *Os Dracos... ovos de poder primordial capazes de trazer Tiamat de volta... eles estão aqui em Karameikos. Meus batedores relatam que o elfo renegado Syndarion já está se movendo para encontrá-los.*\n\nEle olha nos seus olhos, buscando um sinal de coragem.\n\n— *Eu não posso enviar um exército sem causar pânico ou guerra com Thyatis. Preciso de alguém capaz de agir nas sombras e nas selvas. Preciso de você.*\n\nAntes de aceitar o peso do destino... quem é você nesta sala?",
     options: [
-        { label: "Sou um Homem", value: "Sou um homem. (O guarda anota. Narre o próximo evento de ação para definir minha classe)" },
-        { label: "Sou uma Mulher", value: "Sou uma mulher. (O guarda anota. Narre o próximo evento de ação para definir minha classe)" },
-        { label: "Manter o Mistério", value: "Mantenho o capuz baixo e não respondo. (O guarda se irrita. Narre o evento de ação)" }
+        { 
+            label: "Guerreiro Local", 
+            value: "Sou um guerreiro de Threshold, leal ao Barão. (Defina minha classe como Guerreiro e me dê um equipamento herdado de família)" 
+        },
+        { 
+            label: "Caçador de Relíquias", 
+            value: "Sou um estudioso arcano ou ladino, interessado no poder dos Dracos. (Defina minha classe como Mago ou Ladino e me dê um fragmento de mapa)" 
+        },
+        { 
+            label: "Forasteiro Relutante", 
+            value: "Sou um viajante que apenas buscava abrigo, mas agora estou envolvido. (Defina minha classe como Patrulheiro ou Bárbaro e me dê um motivo pessoal para odiar o Culto do Dragão)" 
+        }
     ],
     gameResponse: {
-        narrative: "A neblina salgada...",
+        narrative: "O vento uiva...",
         status_jogador: { 
             nome: "Desconhecido", 
-            titulo: "Viajante", 
+            titulo: "Recruta", 
             hp_atual: 10, 
             hp_max: 10, 
             armor_class: 10,
-            local: "Porto de Mirros", 
-            missao: "Entrar na Cidade", 
-            inventario: ["Roupas de Viajante"],
-            grupo: [] // Começa vazio
+            local: "Solar do Barão Halaran (Threshold)", 
+            missao: "A Busca pelos Dracos", // Missão Principal definida
+            inventario: ["Mochila de Aventureiro"],
+            grupo: [],
+            reputacao: { thyatis: 0, traladara: 0 } // Inicializa Facções
         },
         update_scene: {
             trigger: true,
-            visual_prompt: "Mirros harbor in thick fog, medieval docks, ships, overcast sky",
+            visual_prompt: "Baron Halaran's Manor interior, heavy oak table with maps, fireplace, medieval dark fantasy atmosphere, candlelight.",
         },
         interface: { 
             modo: "botoes", 
             permitir_input_livre: true,
             conteudo: [
-                { label: "Sou um Homem", value: "Sou um homem..." },
-                { label: "Sou uma Mulher", value: "Sou uma mulher..." },
-                { label: "Manter o Mistério", value: "Mantenho o capuz baixo..." }
+                { label: "Guerreiro Local", value: "Sou um guerreiro de Threshold, leal ao Barão. (Defina minha classe como Guerreiro e me dê um equipamento herdado de família)" },
+                { label: "Caçador de Relíquias", value: "Sou um estudioso arcano ou ladino, interessado no poder dos Dracos. (Defina minha classe como Mago ou Ladino e me dê um fragmento de mapa)" },
+                { label: "Forasteiro Relutante", value: "Sou um viajante que apenas buscava abrigo, mas agora estou envolvido. (Defina minha classe como Patrulheiro ou Bárbaro e me dê um motivo pessoal para odiar o Culto do Dragão)" }
             ] 
         }
     }
@@ -478,10 +568,73 @@ const MessageItem: React.FC<{ msg: Message, isLast: boolean }> = ({ msg, isLast 
     );
 };
 
+// Component for Selecting Pre-generated Characters
+const PregenSelector = ({ onSelect }: { onSelect: (char: PregenCharacter) => void }) => {
+    return (
+        <div className="bg-[#1e1c19] border border-stone-700 p-6 rounded-lg max-w-5xl mx-auto my-6 shadow-2xl animate-fade-in">
+            <h3 className="font-fantasy text-2xl text-yellow-600 mb-2 text-center tracking-widest">Lendas de Karameikos</h3>
+            <p className="text-center text-stone-400 mb-6 font-serif italic">Escolha um herói pronto para iniciar sua jornada imediatamente.</p>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {PREGEN_CHARACTERS.map((char) => (
+                    <div 
+                        key={char.id} 
+                        onClick={() => onSelect(char)}
+                        className="group relative bg-[#141210] border border-stone-600 hover:border-yellow-600 rounded-lg p-4 cursor-pointer transition-all hover:-translate-y-1 hover:shadow-xl overflow-hidden flex flex-col"
+                    >
+                        <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/80 pointer-events-none"></div>
+                        <div className="absolute top-0 right-0 p-2 text-[10px] font-bold uppercase tracking-wider bg-stone-800 text-stone-300 rounded-bl-lg border-b border-l border-stone-600">
+                           {char.role}
+                        </div>
+
+                        <div className="mb-3 relative z-10">
+                            <h4 className="text-xl font-fantasy text-yellow-500 group-hover:text-yellow-400 transition-colors">{char.nome}</h4>
+                            <span className="text-xs uppercase tracking-widest text-stone-400">{char.raca} | {char.classe}</span>
+                        </div>
+
+                        <div className="grid grid-cols-6 gap-1 mb-4 text-center relative z-10">
+                            {Object.entries(char.stats).map(([stat, val]) => (
+                                <div key={stat} className="bg-stone-900/80 rounded p-1 border border-stone-800">
+                                    <span className="block text-[9px] uppercase font-bold text-stone-500">{stat}</span>
+                                    <span className={`block font-bold ${val > 15 ? 'text-yellow-500' : 'text-stone-300'}`}>{val}</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        <p className="text-sm text-stone-300 font-serif italic mb-4 flex-1 relative z-10 line-clamp-3">"{char.desc}"</p>
+
+                        <div className="text-[10px] text-stone-500 relative z-10">
+                            <strong className="text-stone-400">Equip:</strong> {char.equip.join(", ")}
+                        </div>
+                    </div>
+                ))}
+            </div>
+            
+            <div className="mt-6 text-center">
+                 <button onClick={() => onSelect({ id: 'manual', nome: 'Criar Novo', raca: '', classe: '', stats: {} as any, hp: 0, equip: [], desc: '', role: '' })} className="text-stone-500 hover:text-stone-300 underline text-sm">
+                     Voltar e criar ficha manualmente
+                 </button>
+            </div>
+        </div>
+    );
+};
+
+
 // Advanced Dynamic Form with Point Buy & Dice Logic
 const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema, onSubmit: (v: any) => void, context: any }) => {
     const [formData, setFormData] = useState<any>({});
     const [pointsUsed, setPointsUsed] = useState(0);
+
+    // Initialize defaults from schema if available
+    useEffect(() => {
+        if (schema && schema.fields) {
+            const defaults: any = {};
+            schema.fields.forEach(f => {
+                if (f.defaultValue) defaults[f.id] = f.defaultValue;
+            });
+            setFormData((prev: any) => ({ ...defaults, ...prev }));
+        }
+    }, [schema]);
 
     const STAT_IDS = ['for', 'des', 'con', 'int', 'sab', 'car'];
     
@@ -515,7 +668,7 @@ const DynamicForm = ({ schema, onSubmit, context }: { schema: FormSchema, onSubm
     }, [formData, isPointBuy]);
 
     const handleInputChange = (id: string, value: string) => {
-        setFormData(prev => ({ ...prev, [id]: value }));
+        setFormData((prev: any) => ({ ...prev, [id]: value }));
     };
 
     return (
@@ -616,8 +769,15 @@ const QuickActions = ({ actions, onActionClick }: { actions: string[], onActionC
     );
 };
 
-// --- COMPONENT: Audio Controller ---
-const AudioController = ({ isPlaying, setIsPlaying, volume = 0.3 }: { isPlaying: boolean, setIsPlaying: (v: boolean) => void, volume?: number }) => {
+// --- COMPONENT: Audio Controller (Updated for Header) ---
+const AudioController = ({ isPlaying, setIsPlaying, volume, setVolume, isAudioEnabled, setIsAudioEnabled }: { 
+    isPlaying: boolean, 
+    setIsPlaying: (v: boolean) => void, 
+    volume: number,
+    setVolume: (v: number) => void,
+    isAudioEnabled: boolean,
+    setIsAudioEnabled: (v: boolean) => void
+}) => {
   const audioRef = useRef<HTMLAudioElement>(null);
   
   // URL de uma música de fantasia "Royalty Free"
@@ -635,19 +795,42 @@ const AudioController = ({ isPlaying, setIsPlaying, volume = 0.3 }: { isPlaying:
   }, [isPlaying, volume]);
 
   return (
-    <div className="flex items-center gap-2">
-      <audio ref={audioRef} src={MUSIC_URL} loop />
-      <button 
-        onClick={() => setIsPlaying(!isPlaying)}
-        className={`p-2 rounded-full border transition-all ${isPlaying ? 'bg-yellow-900/40 border-yellow-600 text-yellow-500 shadow-[0_0_10px_#ca8a04]' : 'bg-black/40 border-stone-700 text-stone-500'}`}
-        title={isPlaying ? "Pausar Música" : "Tocar Música Ambiente"}
-      >
-        {isPlaying ? (
-           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-        ) : (
-           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-        )}
-      </button>
+    <div className="flex items-center gap-3">
+        <audio ref={audioRef} src={MUSIC_URL} loop />
+        
+        {/* Toggle Speech */}
+        <button 
+            onClick={() => setIsAudioEnabled(!isAudioEnabled)}
+            className={`p-2 rounded-full border transition-all ${isAudioEnabled ? 'bg-yellow-900/40 border-yellow-600 text-yellow-500' : 'bg-black/40 border-stone-700 text-stone-500'}`}
+            title="Narração"
+        >
+            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-5.5l6-4.5-6-4.5v9z"/></svg>
+        </button>
+
+        {/* Music Controls */}
+        <div className="flex items-center gap-2 bg-[#2a2622] rounded-full px-2 py-1 border border-[#3e352f]">
+            <button 
+                onClick={() => setIsPlaying(!isPlaying)}
+                className={`p-1.5 rounded-full transition-all ${isPlaying ? 'text-yellow-500 animate-pulse' : 'text-stone-500'}`}
+                title="Música de Fundo"
+            >
+                {isPlaying ? (
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                ) : (
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                )}
+            </button>
+            <input 
+                type="range" 
+                min="0" 
+                max="1" 
+                step="0.1" 
+                value={volume} 
+                onChange={(e) => setVolume(parseFloat(e.target.value))} 
+                className="w-16 h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer accent-yellow-700" 
+                title="Volume"
+            />
+        </div>
     </div>
   );
 };
@@ -669,8 +852,8 @@ const SceneDisplay = ({ sceneData }: { sceneData?: { visual_prompt: string, styl
 
   return (
     <div className="relative w-full h-48 md:h-64 rounded-xl overflow-hidden mb-6 shadow-2xl border border-stone-800 group transition-all duration-1000">
-      {/* Imagem de Fundo */}
-      <img src={bgUrl} alt="Cenário" className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity duration-700 animate-fade-in" />
+      {/* Imagem de Fundo com key={bgUrl} para reiniciar a animação ao trocar de cenário */}
+      <img key={bgUrl} src={bgUrl} alt="Cenário" className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity duration-700 animate-fade-in" />
       
       {/* Gradiente para texto legível */}
       <div className="absolute inset-0 bg-gradient-to-t from-[#121212] via-transparent to-transparent"></div>
@@ -707,11 +890,14 @@ const App = () => {
         missao: "Entrar na Cidade", 
         inventario: [], 
         atributos: undefined,
-        grupo: [] 
+        grupo: [],
+        talentos: [],
+        missoes_ativas: [], // Initialize empty missions
+        reputacao: { thyatis: 0, traladara: 0 } // Initialize factions
     });
     const [inputText, setInputText] = useState("");
     const [isLoading, setIsLoading] = useState(false);
-    const [inputMode, setInputMode] = useState<"texto_livre" | "botoes" | "rolagem" | "formulario">("botoes");
+    const [inputMode, setInputMode] = useState<"texto_livre" | "botoes" | "rolagem" | "formulario" | "selecao_fichas">("botoes");
     const [allowFreeInput, setAllowFreeInput] = useState(true); 
     const [currentOptions, setCurrentOptions] = useState<Option[]>(INITIAL_BUTTONS);
     const [currentFormSchema, setCurrentFormSchema] = useState<FormSchema | null>(null);
@@ -926,11 +1112,17 @@ const App = () => {
                     } catch (e) { console.error("Failed to parse regex JSON", e); }
                 }
             }
+            
+            // CLEANUP: Remove system tags from narrative if they leaked
+            narrative = narrative
+                .replace(/\[update_scene\]:.*$/gim, "")
+                .replace(/\[update_avatar\]:.*$/gim, "")
+                .trim();
 
             // --- PROCESS GAME STATE ---
             let finalOptions: Option[] = [];
             let finalForm: FormSchema | null = null;
-            let nextMode: "texto_livre" | "botoes" | "rolagem" | "formulario" = "texto_livre";
+            let nextMode: "texto_livre" | "botoes" | "rolagem" | "formulario" | "selecao_fichas" = "texto_livre";
             let nextAllowInput = false;
             let imageUrl: string | undefined = undefined;
 
@@ -972,10 +1164,9 @@ const App = () => {
                     const scenePrompt = `Fantasy RPG Environment, ${gameResponse.update_scene.style || "Cinematic, Detailed"}, ${gameResponse.update_scene.visual_prompt}`;
                     
                     try {
-                        // We run this in background (not awaiting it to block the UI render)
                         ai.models.generateContent({
                             model: IMAGE_MODEL_NAME,
-                            contents: { parts: [{ text: scenePrompt }] }
+                            contents: [{ parts: [{ text: scenePrompt }] }]
                         }).then(sceneRes => {
                              const part = sceneRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
                              if (part) {
@@ -995,7 +1186,7 @@ const App = () => {
                      try {
                         const avatarRes = await ai.models.generateContent({
                             model: IMAGE_MODEL_NAME,
-                            contents: { parts: [{ text: avatarPrompt }] }
+                            contents: [{ parts: [{ text: avatarPrompt }] }]
                         });
                         const part = avatarRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
                         if (part) {
@@ -1010,7 +1201,7 @@ const App = () => {
                      try {
                         const imgRes = await ai.models.generateContent({
                             model: IMAGE_MODEL_NAME,
-                            contents: { parts: [{ text: scenePrompt }] }
+                            contents: [{ parts: [{ text: scenePrompt }] }]
                         });
                         const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
                         if (part) {
@@ -1089,6 +1280,12 @@ const App = () => {
         const valueString = JSON.stringify(values);
         handleSendMessage(`[SISTEMA: Ficha preenchida: ${valueString}]`);
     };
+
+    const handlePregenSelect = (char: PregenCharacter) => {
+        // Send a system message to the AI indicating the choice
+        const msg = `[SISTEMA: O jogador escolheu a ficha pronta: ${char.nome}, ${char.raca}, ${char.classe}. Stats: For${char.stats.for}, Des${char.stats.des}, Con${char.stats.con}, Int${char.stats.int}, Sab${char.stats.sab}, Car${char.stats.car}. Equip: ${char.equip.join(', ')}. O jogador assumiu essa identidade. Continue a história no Passo 4.]`;
+        handleSendMessage(msg);
+    };
     
     const renderInputArea = () => (
         <div className="flex gap-2 max-w-4xl mx-auto w-full">
@@ -1112,249 +1309,295 @@ const App = () => {
     );
 
     return (
-        <div className="flex h-full w-full bg-[#1a1816] text-[#d1c4b2] overflow-hidden font-sans">
-            {/* Sidebar */}
-            <div className="hidden md:flex flex-col w-72 border-r border-[#3e352f] bg-[#141210] p-4 gap-4 overflow-y-auto z-10 shadow-xl">
-                 <div className="flex flex-col items-center gap-2 mb-4">
-                     <div className="w-32 h-32 rounded-full border-2 border-yellow-900 overflow-hidden bg-black shadow-lg relative">
-                         {status.avatarUrl ? (
-                             <img src={status.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
-                         ) : (
-                             <div className="w-full h-full flex items-center justify-center text-4xl text-stone-700">?</div>
-                         )}
-                         {floatingTexts.map(ft => (
-                             <div key={ft.id} className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-4xl font-bold font-fantasy drop-shadow-md pointer-events-none animate-float-up ${ft.color}`} style={{ textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
-                                 {ft.text}
-                             </div>
-                         ))}
-                     </div>
-                     <h2 className="font-fantasy text-xl text-yellow-600">{status.nome}</h2>
-                     <span className="text-xs uppercase tracking-widest text-stone-500">{status.titulo}</span>
-                 </div>
-
-                 <div className="space-y-4">
-                     <div className="flex gap-2 items-end">
-                         <div className="flex-1">
-                             <div className="flex justify-between text-xs uppercase font-bold text-stone-500 mb-1">
-                                 <span>Vitalidade</span>
-                                 <span>{status.hp_atual}/{status.hp_max}</span>
-                             </div>
-                             <div className="h-2 bg-stone-800 rounded-full overflow-hidden border border-stone-700/50">
-                                 <div 
-                                    className="h-full bg-red-900 transition-all duration-500 shadow-[0_0_10px_rgba(153,27,27,0.5)]" 
-                                    style={{ width: `${(status.hp_atual / status.hp_max) * 100}%`}}
-                                 ></div>
-                             </div>
-                         </div>
-                         
-                         <div className="flex flex-col items-center justify-center bg-[#2a2622] border border-stone-600 rounded px-2 py-1 min-w-[3.5rem] shadow-inner">
-                             <span className="text-[9px] text-stone-500 font-bold uppercase tracking-widest mb-0.5">Defesa</span>
-                             <div className="flex items-center gap-1">
-                                <svg className="w-3 h-3 text-stone-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>
-                                <span className="text-xl font-fantasy text-stone-200">{status.armor_class || 10}</span>
-                             </div>
-                         </div>
-                     </div>
-
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
-                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Local Atual</h4>
-                         <p className="font-serif text-sm text-stone-300">{status.local}</p>
-                     </div>
-
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
-                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Missão</h4>
-                         <p className="font-serif text-sm text-stone-300 italic">"{status.missao}"</p>
-                     </div>
-
-                     {/* INVENTORY SECTION */}
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f] relative">
-                         <h4 className="text-xs uppercase font-bold text-stone-500 mb-2 flex justify-between">
-                            <span>Mochila</span>
-                            <span className="text-[10px] text-stone-600 font-normal normal-case italic">(Clique para ações)</span>
-                         </h4>
-                         <div className="flex flex-wrap gap-2">
-                             {status.inventario?.map((item, i) => (
-                                 <button 
-                                    key={i} 
-                                    onClick={(e) => {
-                                        const rect = e.currentTarget.getBoundingClientRect();
-                                        setActiveItemMenu({ item, x: rect.left, y: rect.bottom + 5 });
-                                    }} 
-                                    className="text-xs bg-black/40 border border-stone-700 px-2 py-1 rounded text-stone-300 hover:border-yellow-700 hover:text-yellow-200 transition-all cursor-pointer flex items-center gap-1"
-                                 >
-                                     {item}
-                                 </button>
-                             ))}
-                             {(!status.inventario || status.inventario.length === 0) && <span className="text-xs text-stone-600 italic">Vazio</span>}
-                         </div>
-
-                         {activeItemMenu && (
-                             <>
-                                 <div className="fixed inset-0 z-40" onClick={() => setActiveItemMenu(null)}></div>
-                                 <div 
-                                     className="fixed z-50 bg-[#2a2622] border border-yellow-700/50 shadow-2xl rounded-lg py-1 w-32 flex flex-col animate-fade-in text-sm"
-                                     style={{ top: activeItemMenu.y, left: activeItemMenu.x }}
-                                 >
-                                     <div className="px-3 py-1 text-[10px] uppercase font-bold text-stone-500 border-b border-stone-700 mb-1 truncate">
-                                         {activeItemMenu.item}
-                                     </div>
-                                     <button onClick={() => handleItemAction('usar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-stone-200 hover:bg-yellow-900/40 hover:text-yellow-400 transition-colors">✨ Usar</button>
-                                     <button onClick={() => handleItemAction('examinar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-stone-200 hover:bg-yellow-900/40 hover:text-yellow-400 transition-colors">🔍 Examinar</button>
-                                     <button onClick={() => handleItemAction('descartar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-red-400 hover:bg-red-900/20 hover:text-red-300 transition-colors border-t border-stone-700 mt-1">🗑️ Descartar</button>
-                                 </div>
-                             </>
-                         )}
-                     </div>
-
-                     <DividerDecoration />
-
-                     {/* GROUP / COMPANIONS SECTION */}
-                     <div className="mt-4 border-t border-yellow-900/30 pt-4">
-                        <h4 className="text-[10px] uppercase font-bold text-stone-500 mb-3 flex items-center gap-2">
-                            <span>🛡️ Grupo</span>
-                            <span className="h-[1px] flex-1 bg-stone-800"></span>
-                        </h4>
-                        
-                        <div className="space-y-2">
-                            {status.grupo && status.grupo.length > 0 ? (
-                                status.grupo.map((npc, idx) => (
-                                    <div key={idx} className="flex items-center gap-3 bg-black/20 p-2 rounded border border-stone-800/50 hover:border-stone-600 transition-colors group">
-                                        {/* Avatar do NPC (Gerado pela inicial ou placeholder) */}
-                                        <div className="w-8 h-8 rounded-full bg-stone-700 flex items-center justify-center border border-stone-600 shadow-sm relative overflow-hidden">
-                                            {npc.avatar ? (
-                                                <img src={npc.avatar} className="w-full h-full object-cover" />
-                                            ) : (
-                                                <span className="text-xs font-fantasy text-stone-300">{npc.nome.charAt(0)}</span>
-                                            )}
-                                            {/* Indicador de Status (Vivo/Ferido) */}
-                                            <div className={`absolute bottom-0 right-0 w-2 h-2 rounded-full border border-black ${npc.status === 'Vivo' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                                        </div>
-                                        
-                                        <div className="flex flex-col">
-                                            <span className="text-xs font-bold text-stone-300 group-hover:text-yellow-100 transition-colors">
-                                                {npc.nome}
-                                            </span>
-                                            <span className="text-[9px] text-stone-500 uppercase tracking-wide">
-                                                {npc.classe}
-                                            </span>
-                                        </div>
-
-                                        {/* Botão de interação rápida (Opcional) */}
-                                        <button 
-                                            onClick={() => handleSendMessage(`[SISTEMA: O jogador interage com ${npc.nome}.] O que você acha disso, ${npc.nome}?`)}
-                                            className="ml-auto opacity-0 group-hover:opacity-100 text-stone-400 hover:text-white transition-opacity"
-                                            title="Conversar"
-                                        >
-                                            💬
-                                        </button>
-                                    </div>
-                                ))
-                            ) : (
-                                <div className="text-center py-4 opacity-50">
-                                    <p className="text-[10px] text-stone-600 italic">Você viaja sozinho... por enquanto.</p>
-                                </div>
-                            )}
-                        </div>
+        <div className="h-screen w-screen flex flex-col bg-[#1a1816] text-[#d1c4b2] overflow-hidden font-sans">
+            {/* TOP BAR (Header) */}
+            <header className="h-16 flex-none bg-[#0e0c0a] border-b border-[#3e352f] flex items-center justify-between px-6 shadow-xl z-20">
+                <div className="flex flex-col">
+                    <h1 className="text-yellow-600 font-fantasy text-lg tracking-wider">Crônicas de Karameikos</h1>
+                    <div className="flex items-center gap-2 text-xs text-stone-400">
+                        <span className="uppercase font-bold tracking-widest">{status.local}</span>
+                        {status.missao && <span className="text-stone-600">| {status.missao}</span>}
                     </div>
-
-                     {/* AUDIO CONTROLS */}
-                     <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f] space-y-3">
-                         <div className="flex justify-between items-center">
-                            <h4 className="text-xs uppercase font-bold text-stone-500">Narração do Mestre</h4>
-                            {isSpeaking && <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>}
-                         </div>
-                         <label className="flex items-center gap-2 cursor-pointer">
-                             <div className="relative">
-                                 <input type="checkbox" className="hidden" checked={isAudioEnabled} onChange={() => setIsAudioEnabled(!isAudioEnabled)} />
-                                 <div className={`w-10 h-5 rounded-full shadow-inner transition-colors ${isAudioEnabled ? 'bg-yellow-900' : 'bg-stone-700'}`}></div>
-                                 <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-stone-300 shadow transition-transform ${isAudioEnabled ? 'translate-x-5' : 'translate-x-0'}`}></div>
-                             </div>
-                             <span className="text-sm text-stone-400">{isAudioEnabled ? "Ligado" : "Desligado"}</span>
-                         </label>
-                         <input type="range" min="0" max="1" step="0.1" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-full h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer accent-yellow-700" />
-                     </div>
-                     <div className="pt-4 border-t border-[#3e352f] mt-auto space-y-4">
-                        <div className="flex justify-between items-center">
-                           <span className="text-[10px] uppercase font-bold text-stone-600">Ambiente</span>
-                           <AudioController isPlaying={isMusicPlaying} setIsPlaying={setIsMusicPlaying} volume={volume} />
-                        </div>
-                        <button onClick={handleResetGame} className="w-full text-xs text-stone-600 hover:text-red-500 transition-colors flex items-center justify-center gap-2 uppercase tracking-widest py-2 hover:bg-red-950/10 rounded">
-                            Reiniciar Aventura
-                        </button>
-                     </div>
-                 </div>
-            </div>
-
-            {/* Main Chat Area */}
-            <div className="flex-1 flex flex-col relative bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')]">
-                {lootNotification && <LootToast item={lootNotification} />}
-                {status.combat && <CombatTracker combatState={status.combat} />}
-
-                <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
-                    {/* Scene Display (Imersive Background Banner) */}
-                    {currentScene && <SceneDisplay sceneData={currentScene} />}
-
-                    {messages.map((msg, idx) => (
-                        <MessageItem 
-                            key={msg.id} 
-                            msg={msg} 
-                            isLast={idx === messages.length - 1} 
-                        />
-                    ))}
-                    {inputMode === 'formulario' && currentFormSchema && (
-                        <DynamicForm 
-                            schema={currentFormSchema} 
-                            onSubmit={handleFormSubmit}
-                            context={charCreationContext} 
-                        />
-                    )}
-                    {isLoading && (
-                        <div className="flex justify-start animate-pulse mt-4">
-                            <div className="flex items-center gap-2 bg-[#1e1c19] px-4 py-2 rounded-full border border-[#3e352f] text-stone-500 font-serif italic text-xs">
-                                <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce"></div>
-                                <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce delay-75"></div>
-                                <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce delay-150"></div>
-                                O Destino está sendo escrito...
-                            </div>
-                        </div>
-                    )}
-                    <div ref={messagesEndRef} />
                 </div>
 
-                {/* Input Area */}
-                <div className="p-4 bg-[#141210] border-t border-[#3e352f] shadow-[0_-5px_20px_rgba(0,0,0,0.5)]">
-                    <QuickActions actions={quickActions} onActionClick={handleSendMessage} />
+                <div className="flex items-center gap-4">
+                    {/* Audio Controller moved to Top Bar */}
+                    <AudioController 
+                        isPlaying={isMusicPlaying} 
+                        setIsPlaying={setIsMusicPlaying} 
+                        volume={volume}
+                        setVolume={setVolume}
+                        isAudioEnabled={isAudioEnabled}
+                        setIsAudioEnabled={setIsAudioEnabled}
+                    />
                     
-                    {inputMode === 'rolagem' ? (
-                        <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center py-4">
-                            Rolagem Necessária
+                    <div className="h-6 w-px bg-stone-700 mx-2"></div>
+
+                    <button 
+                        onClick={handleResetGame} 
+                        className="text-stone-500 hover:text-red-500 transition-colors text-xs uppercase tracking-widest hover:underline"
+                    >
+                        Reiniciar
+                    </button>
+                </div>
+            </header>
+
+            <div className="flex-1 flex overflow-hidden">
+                {/* FIXED LEFT SIDEBAR (Character Sheet) */}
+                <aside className="hidden md:flex flex-col w-80 border-r border-[#3e352f] bg-[#141210] p-4 gap-4 overflow-y-auto z-10 shadow-xl">
+                    <div className="flex flex-col items-center gap-2 mb-2 border-b border-[#2a2622] pb-4">
+                        <div className="w-32 h-32 rounded-full border-2 border-yellow-900 overflow-hidden bg-black shadow-lg relative">
+                            {status.avatarUrl ? (
+                                <img src={status.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                            ) : (
+                                <div className="w-full h-full flex items-center justify-center text-4xl text-stone-700">?</div>
+                            )}
+                            {floatingTexts.map(ft => (
+                                <div key={ft.id} className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-4xl font-bold font-fantasy drop-shadow-md pointer-events-none animate-float-up ${ft.color}`} style={{ textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
+                                    {ft.text}
+                                </div>
+                            ))}
                         </div>
-                    ) : inputMode === 'botoes' ? (
-                        <div className="flex flex-col gap-4 w-full">
-                            <div className="flex flex-wrap gap-2 justify-center animate-fade-in">
-                                {currentOptions.map((opt, idx) => (
-                                    <button
-                                        key={idx}
-                                        onClick={() => handleSendMessage(opt.value)}
-                                        className="group relative bg-stone-800 hover:bg-[#2a2622] border border-stone-600 hover:border-yellow-700 px-5 py-3 rounded text-left flex flex-col min-w-[200px] transition-all hover:-translate-y-1 shadow-lg overflow-hidden"
+                        <h2 className="font-fantasy text-xl text-yellow-600">{status.nome}</h2>
+                        <span className="text-xs uppercase tracking-widest text-stone-500">{status.titulo}</span>
+                    </div>
+
+                    <div className="space-y-4">
+                        {/* Stats */}
+                        <div className="flex gap-2 items-end">
+                            <div className="flex-1">
+                                <div className="flex justify-between text-xs uppercase font-bold text-stone-500 mb-1">
+                                    <span>Vitalidade</span>
+                                    <span>{status.hp_atual}/{status.hp_max}</span>
+                                </div>
+                                <div className="h-2 bg-stone-800 rounded-full overflow-hidden border border-stone-700/50">
+                                    <div 
+                                        className="h-full bg-red-900 transition-all duration-500 shadow-[0_0_10px_rgba(153,27,27,0.5)]" 
+                                        style={{ width: `${(status.hp_atual / status.hp_max) * 100}%`}}
+                                    ></div>
+                                </div>
+                            </div>
+                            
+                            <div className="flex flex-col items-center justify-center bg-[#2a2622] border border-stone-600 rounded px-2 py-1 min-w-[3.5rem] shadow-inner">
+                                <span className="text-[9px] text-stone-500 font-bold uppercase tracking-widest mb-0.5">Defesa</span>
+                                <div className="flex items-center gap-1">
+                                    <svg className="w-3 h-3 text-stone-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4 5v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V5l-8-3z"/></svg>
+                                    <span className="text-xl font-fantasy text-stone-200">{status.armor_class || 10}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* New Talents Section */}
+                        {status.talentos && status.talentos.length > 0 && (
+                            <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f]">
+                                <h4 className="text-xs uppercase font-bold text-stone-500 mb-2">Talentos</h4>
+                                <div className="flex flex-wrap gap-1">
+                                    {status.talentos.map((t, i) => (
+                                        <span key={i} className="text-[10px] bg-stone-800 text-stone-300 px-2 py-1 rounded border border-stone-700">{t}</span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* INVENTORY SECTION */}
+                        <div className="bg-[#1e1c19] p-3 rounded border border-[#3e352f] relative">
+                            <h4 className="text-xs uppercase font-bold text-stone-500 mb-2 flex justify-between">
+                                <span>Mochila</span>
+                                <span className="text-[10px] text-stone-600 font-normal normal-case italic">(Clique para ações)</span>
+                            </h4>
+                            <div className="flex flex-wrap gap-2">
+                                {status.inventario?.map((item, i) => (
+                                    <button 
+                                        key={i} 
+                                        onClick={(e) => {
+                                            const rect = e.currentTarget.getBoundingClientRect();
+                                            setActiveItemMenu({ item, x: rect.left, y: rect.bottom + 5 });
+                                        }} 
+                                        className="text-xs bg-black/40 border border-stone-700 px-2 py-1 rounded text-stone-300 hover:border-yellow-700 hover:text-yellow-200 transition-all cursor-pointer flex items-center gap-1"
                                     >
-                                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-yellow-900/10 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
-                                        <span className="text-yellow-500 font-bold text-sm font-fantasy tracking-wide relative z-10">{opt.label}</span>
-                                        {opt.sub && <span className="text-stone-500 text-xs italic relative z-10">{opt.sub}</span>}
+                                        {item}
                                     </button>
                                 ))}
+                                {(!status.inventario || status.inventario.length === 0) && <span className="text-xs text-stone-600 italic">Vazio</span>}
                             </div>
-                            {allowFreeInput && renderInputArea()}
+
+                            {activeItemMenu && (
+                                <>
+                                    <div className="fixed inset-0 z-40" onClick={() => setActiveItemMenu(null)}></div>
+                                    <div 
+                                        className="fixed z-50 bg-[#2a2622] border border-yellow-700/50 shadow-2xl rounded-lg py-1 w-32 flex flex-col animate-fade-in text-sm"
+                                        style={{ top: activeItemMenu.y, left: activeItemMenu.x }}
+                                    >
+                                        <div className="px-3 py-1 text-[10px] uppercase font-bold text-stone-500 border-b border-stone-700 mb-1 truncate">
+                                            {activeItemMenu.item}
+                                        </div>
+                                        <button onClick={() => handleItemAction('usar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-stone-200 hover:bg-yellow-900/40 hover:text-yellow-400 transition-colors">✨ Usar</button>
+                                        <button onClick={() => handleItemAction('examinar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-stone-200 hover:bg-yellow-900/40 hover:text-yellow-400 transition-colors">🔍 Examinar</button>
+                                        <button onClick={() => handleItemAction('descartar', activeItemMenu.item)} className="text-left px-3 py-1.5 text-red-400 hover:bg-red-900/20 hover:text-red-300 transition-colors border-t border-stone-700 mt-1">🗑️ Descartar</button>
+                                    </div>
+                                </>
+                            )}
                         </div>
-                    ) : inputMode === 'formulario' ? (
-                        <div className="text-center text-stone-500 text-xs uppercase tracking-widest py-3 opacity-60">
-                            Preencha o pergaminho acima
+
+                        {/* QUESTS SECTION */}
+                        <div className="mt-4 border-t border-yellow-900/30 pt-4">
+                            <h4 className="text-[10px] uppercase font-bold text-stone-500 mb-3 flex items-center gap-2">
+                                <span>📜 Missões</span>
+                                <span className="h-[1px] flex-1 bg-stone-800"></span>
+                            </h4>
+                            <div className="space-y-2">
+                                {status.missoes_ativas && status.missoes_ativas.length > 0 ? (
+                                    status.missoes_ativas.map((quest, idx) => (
+                                        <div key={quest.id || idx} className="bg-[#141210] p-2 rounded border border-stone-800">
+                                            <div className="flex justify-between items-center mb-1">
+                                                <span className={`text-xs font-bold ${quest.status === 'completa' ? 'text-green-500 line-through' : quest.status === 'falha' ? 'text-red-500' : 'text-yellow-600'}`}>{quest.titulo}</span>
+                                                <span className="text-[9px] uppercase tracking-wide text-stone-600">{quest.status}</span>
+                                            </div>
+                                            <p className="text-[10px] text-stone-400 leading-tight">{quest.descricao}</p>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-center py-2 opacity-50">
+                                        <p className="text-[10px] text-stone-600 italic">Nenhuma missão ativa.</p>
+                                    </div>
+                                )}
+                            </div>
                         </div>
-                    ) : (
-                        renderInputArea()
-                    )}
+
+                        <DividerDecoration />
+
+                        {/* GROUP / COMPANIONS SECTION */}
+                        <div className="mt-4 border-t border-yellow-900/30 pt-4">
+                            <h4 className="text-[10px] uppercase font-bold text-stone-500 mb-3 flex items-center gap-2">
+                                <span>🛡️ Grupo</span>
+                                <span className="h-[1px] flex-1 bg-stone-800"></span>
+                            </h4>
+                            
+                            <div className="space-y-2">
+                                {status.grupo && status.grupo.length > 0 ? (
+                                    status.grupo.map((npc, idx) => (
+                                        <div key={idx} className="flex items-center gap-3 bg-black/20 p-2 rounded border border-stone-800/50 hover:border-stone-600 transition-colors group">
+                                            {/* Avatar do NPC */}
+                                            <div className="w-8 h-8 rounded-full bg-stone-700 flex items-center justify-center border border-stone-600 shadow-sm relative overflow-hidden">
+                                                {npc.avatar ? (
+                                                    <img src={npc.avatar} className="w-full h-full object-cover" />
+                                                ) : (
+                                                    <span className="text-xs font-fantasy text-stone-300">{npc.nome.charAt(0)}</span>
+                                                )}
+                                                <div className={`absolute bottom-0 right-0 w-2 h-2 rounded-full border border-black ${npc.status === 'Vivo' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                            </div>
+                                            
+                                            <div className="flex flex-col">
+                                                <span className="text-xs font-bold text-stone-300 group-hover:text-yellow-100 transition-colors">
+                                                    {npc.nome}
+                                                </span>
+                                                <span className="text-[9px] text-stone-500 uppercase tracking-wide">
+                                                    {npc.classe}
+                                                </span>
+                                            </div>
+
+                                            <button 
+                                                onClick={() => handleSendMessage(`[SISTEMA: O jogador interage com ${npc.nome}.] O que você acha disso, ${npc.nome}?`)}
+                                                className="ml-auto opacity-0 group-hover:opacity-100 text-stone-400 hover:text-white transition-opacity"
+                                                title="Conversar"
+                                            >
+                                                💬
+                                            </button>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-center py-4 opacity-50">
+                                        <p className="text-[10px] text-stone-600 italic">Você viaja sozinho... por enquanto.</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                {/* Main Chat Area */}
+                <div className="flex-1 flex flex-col relative bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')]">
+                    {lootNotification && <LootToast item={lootNotification} />}
+                    {status.combat && <CombatTracker combatState={status.combat} />}
+
+                    <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
+                        {/* Scene Display (Imersive Background Banner) */}
+                        {currentScene && <SceneDisplay sceneData={currentScene} />}
+
+                        {messages.map((msg, idx) => (
+                            <MessageItem 
+                                key={msg.id} 
+                                msg={msg} 
+                                isLast={idx === messages.length - 1} 
+                            />
+                        ))}
+                        {inputMode === 'formulario' && currentFormSchema && (
+                            <DynamicForm 
+                                schema={currentFormSchema} 
+                                onSubmit={handleFormSubmit}
+                                context={charCreationContext} 
+                            />
+                        )}
+                        {inputMode === 'selecao_fichas' && (
+                             <PregenSelector onSelect={handlePregenSelect} />
+                        )}
+                        {isLoading && (
+                            <div className="flex justify-start animate-pulse mt-4">
+                                <div className="flex items-center gap-2 bg-[#1e1c19] px-4 py-2 rounded-full border border-[#3e352f] text-stone-500 font-serif italic text-xs">
+                                    <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce"></div>
+                                    <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce delay-75"></div>
+                                    <div className="w-2 h-2 bg-yellow-700 rounded-full animate-bounce delay-150"></div>
+                                    O Destino está sendo escrito...
+                                </div>
+                            </div>
+                        )}
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Input Area */}
+                    <div className="p-4 bg-[#141210] border-t border-[#3e352f] shadow-[0_-5px_20px_rgba(0,0,0,0.5)] z-20">
+                        <QuickActions actions={quickActions} onActionClick={handleSendMessage} />
+                        
+                        {inputMode === 'rolagem' ? (
+                            <div className="text-yellow-600 font-fantasy text-lg uppercase tracking-widest text-center py-4">
+                                Rolagem Necessária
+                            </div>
+                        ) : inputMode === 'botoes' ? (
+                            <div className="flex flex-col gap-4 w-full">
+                                <div className="flex flex-wrap gap-2 justify-center animate-fade-in">
+                                    {currentOptions.map((opt, idx) => (
+                                        <button
+                                            key={idx}
+                                            onClick={() => handleSendMessage(opt.value)}
+                                            className="group relative bg-stone-800 hover:bg-[#2a2622] border border-stone-600 hover:border-yellow-700 px-5 py-3 rounded text-left flex flex-col min-w-[200px] transition-all hover:-translate-y-1 shadow-lg overflow-hidden"
+                                        >
+                                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-yellow-900/10 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
+                                            <span className="text-yellow-500 font-bold text-sm font-fantasy tracking-wide relative z-10">{opt.label}</span>
+                                            {opt.sub && <span className="text-stone-500 text-xs italic relative z-10">{opt.sub}</span>}
+                                        </button>
+                                    ))}
+                                </div>
+                                {allowFreeInput && renderInputArea()}
+                            </div>
+                        ) : inputMode === 'formulario' ? (
+                            <div className="text-center text-stone-500 text-xs uppercase tracking-widest py-3 opacity-60">
+                                Preencha o pergaminho acima
+                            </div>
+                         ) : inputMode === 'selecao_fichas' ? (
+                            <div className="text-center text-stone-500 text-xs uppercase tracking-widest py-3 opacity-60">
+                                Escolha seu destino acima
+                            </div>
+                        ) : (
+                            renderInputArea()
+                        )}
+                    </div>
                 </div>
             </div>
         </div>
     );
 };
+
+// Mount the App
+const container = document.getElementById('root');
+const root = createRoot(container!);
+root.render(<App />);
