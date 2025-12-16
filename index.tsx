@@ -100,6 +100,12 @@ type GameResponse = {
     game_event?: GameEvent;
     quick_actions?: string[];
     update_avatar?: { trigger: boolean; visual_prompt: string };
+    // Engine de Cenários: Gera imagem panorâmica ao mudar de local
+    update_scene?: { 
+        trigger: boolean; 
+        visual_prompt: string; // Descrição do ambiente (Ex: "Dark foggy medieval harbor...")
+        style?: string; 
+    };
     interface?: {
         modo: "texto_livre" | "botoes" | "rolagem" | "formulario";
         permitir_input_livre?: boolean;
@@ -132,6 +138,31 @@ Seu objetivo é criar uma introdução ORGÂNICA e CINEMATOGRÁFICA.
 **REGRA DE OURO (OUTPUT JSON):**
 Você deve SEMPRE responder com um objeto JSON válido contendo "narrative" e "game_event".
 
+**DIRETRIZES DO DIRETOR DE ARTE (VISUAL ENGINE):**
+Você controla a imersão visual. Use os campos JSON para pedir imagens.
+
+1. **CENÁRIOS (update_scene):**
+   - ACIONE QUANDO: O jogador muda de local (entra numa sala, chega numa cidade, sai para a floresta).
+   - PROMPT: Descreva o ambiente, iluminação e clima. 
+   - Estilo: "Dark Fantasy Concept Art, Wide Angle, Atmospheric".
+   
+2. **PERSONAGENS (update_avatar):**
+   - ACIONE QUANDO: O jogador interage com um NPC importante ou vê seu próprio reflexo/equipamento novo.
+   - PROMPT: Foco no rosto/busto.
+
+**EXEMPLO JSON:**
+\`\`\`json
+{
+  "narrative": "...",
+  "update_scene": {
+      "trigger": true,
+      "visual_prompt": "Interior of a rowdy medieval tavern in Karameikos, warm firelight, wooden tables, shadows, smoke in the air.",
+      "style": "Oil Painting"
+  },
+  "status_jogador": { ... }
+}
+\`\`\`
+
 **ROTEIRO DO PRÓLOGO (Siga estes 4 passos estritamente):**
 
 **PASSO 1: O ESTRANHO (Identidade)**
@@ -163,23 +194,6 @@ Você deve SEMPRE responder com um objeto JSON válido contendo "narrative" e "g
   - Se Jogador = Ladino, adicione: [Bárbaro, Clérigo, Feiticeiro].
 - Output: Preencha o campo 'status_jogador.grupo' no JSON com esses NPCs.
 
-**ESTRUTURA JSON DE RESPOSTA:**
-\`\`\`json
-{
-  "narrative": "Use diálogos ricos. Ex: 'O guarda cospe no chão. \"Vocês forasteiros são todos iguais.\"'",
-  "game_event": { "type": "none", "data": {} },
-  "status_jogador": {
-      "nome": "Voron",
-      "titulo": "Guerreiro Nível 1",
-      "grupo": [
-          {"nome": "Lyra", "classe": "Maga", "status": "Vivo", "avatar": "url_ou_prompt"},
-          {"nome": "Gorim", "classe": "Anão Guerreiro", "status": "Vivo"}
-      ],
-      // ... outros campos normais
-  },
-  "interface": { ... }
-}
-\`\`\`
 **PROTOCOLO DE SAÍDA (OBRIGATÓRIO):**
 Termine SEMPRE com um bloco JSON oculto separado por "--- [JSON_DATA] ---".
 `;
@@ -206,6 +220,10 @@ const INITIAL_MESSAGE: Message = {
             missao: "Entrar na Cidade", 
             inventario: ["Roupas de Viajante"],
             grupo: [] // Começa vazio
+        },
+        update_scene: {
+            trigger: true,
+            visual_prompt: "Mirros harbor in thick fog, medieval docks, ships, overcast sky",
         },
         interface: { 
             modo: "botoes", 
@@ -595,10 +613,87 @@ const QuickActions = ({ actions, onActionClick }: { actions: string[], onActionC
     );
 };
 
+// --- COMPONENT: Audio Controller ---
+const AudioController = ({ isPlaying, setIsPlaying, volume = 0.3 }: { isPlaying: boolean, setIsPlaying: (v: boolean) => void, volume?: number }) => {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  
+  // URL de uma música de fantasia "Royalty Free"
+  const MUSIC_URL = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=fantasy-orchestral-adventure-109285.mp3"; 
+
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = volume;
+      if (isPlaying) {
+        audioRef.current.play().catch(e => console.log("Autoplay bloqueado:", e));
+      } else {
+        audioRef.current.pause();
+      }
+    }
+  }, [isPlaying, volume]);
+
+  return (
+    <div className="flex items-center gap-2">
+      <audio ref={audioRef} src={MUSIC_URL} loop />
+      <button 
+        onClick={() => setIsPlaying(!isPlaying)}
+        className={`p-2 rounded-full border transition-all ${isPlaying ? 'bg-yellow-900/40 border-yellow-600 text-yellow-500 shadow-[0_0_10px_#ca8a04]' : 'bg-black/40 border-stone-700 text-stone-500'}`}
+        title={isPlaying ? "Pausar Música" : "Tocar Música Ambiente"}
+      >
+        {isPlaying ? (
+           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        ) : (
+           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        )}
+      </button>
+    </div>
+  );
+};
+
+// --- COMPONENT: Scene Display ---
+const SceneDisplay = ({ sceneData }: { sceneData?: { visual_prompt: string, style?: string, imageUrl?: string } }) => {
+  if (!sceneData) return null;
+
+  // Lógica de fallback para Unsplash se não houver imageUrl gerada
+  let bgUrl = sceneData.imageUrl;
+  
+  if (!bgUrl) {
+    bgUrl = "https://images.unsplash.com/photo-1519074069444-1ba4fff66d16?q=80&w=2544&auto=format&fit=crop"; 
+    const p = sceneData.visual_prompt.toLowerCase();
+    if (p.includes("tavern") || p.includes("taverna")) bgUrl = "https://images.unsplash.com/photo-1572061486716-4354228c2e68";
+    if (p.includes("dungeon") || p.includes("masmorra")) bgUrl = "https://images.unsplash.com/photo-1518709268805-4e9042af9f23";
+    if (p.includes("city") || p.includes("cidade") || p.includes("porto") || p.includes("harbor") || p.includes("mirros")) bgUrl = "https://images.unsplash.com/photo-1533035339906-8b226e6e6f1f";
+  }
+
+  return (
+    <div className="relative w-full h-48 md:h-64 rounded-xl overflow-hidden mb-6 shadow-2xl border border-stone-800 group transition-all duration-1000">
+      {/* Imagem de Fundo */}
+      <img src={bgUrl} alt="Cenário" className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity duration-700 animate-fade-in" />
+      
+      {/* Gradiente para texto legível */}
+      <div className="absolute inset-0 bg-gradient-to-t from-[#121212] via-transparent to-transparent"></div>
+      
+      {/* Descrição Artística (Prompt) aparecendo sutilmente */}
+      <div className="absolute bottom-0 left-0 p-4 w-full">
+         <p className="text-[10px] uppercase tracking-widest text-yellow-600/80 font-bold mb-1">Localização Atual</p>
+         <p className="text-sm text-stone-200 font-serif italic drop-shadow-md line-clamp-2">
+           {sceneData.visual_prompt}
+         </p>
+      </div>
+    </div>
+  );
+};
+
 // --- Main App Component ---
 
 const App = () => {
     const [messages, setMessages] = useState<Message[]>([INITIAL_MESSAGE]);
+    const [isMusicPlaying, setIsMusicPlaying] = useState(false);
+    
+    // Atualizado para incluir imageUrl no estado do cenário
+    const [currentScene, setCurrentScene] = useState<{ visual_prompt: string, style?: string, imageUrl?: string } | undefined>(
+        INITIAL_MESSAGE.gameResponse?.update_scene ? { ...INITIAL_MESSAGE.gameResponse.update_scene, imageUrl: undefined } : undefined
+    );
+    
     const [status, setStatus] = useState<GameStatus>({
         nome: "Desconhecido", 
         titulo: "Viajante", 
@@ -631,7 +726,7 @@ const App = () => {
 
     // Audio State
     const [isAudioEnabled, setIsAudioEnabled] = useState(false);
-    const [volume, setVolume] = useState(1.0);
+    const [volume, setVolume] = useState(0.5); 
     const [isSpeaking, setIsSpeaking] = useState(false);
     const audioContextRef = useRef<AudioContext | null>(null);
     const gainNodeRef = useRef<GainNode | null>(null);
@@ -861,7 +956,37 @@ const App = () => {
                     setQuickActions([]);
                 }
 
-                // Visual Update
+                // SCENE UPDATE (Background) with AI Generation
+                if (gameResponse.update_scene?.trigger) {
+                    // Optimistic update using Unsplash fallback initially
+                    setCurrentScene({
+                        visual_prompt: gameResponse.update_scene.visual_prompt,
+                        style: gameResponse.update_scene.style,
+                        imageUrl: undefined 
+                    });
+
+                    // Trigger Image Generation
+                    const scenePrompt = `Fantasy RPG Environment, ${gameResponse.update_scene.style || "Cinematic, Detailed"}, ${gameResponse.update_scene.visual_prompt}`;
+                    
+                    try {
+                        // We run this in background (not awaiting it to block the UI render)
+                        ai.models.generateContent({
+                            model: IMAGE_MODEL_NAME,
+                            contents: { parts: [{ text: scenePrompt }] }
+                        }).then(sceneRes => {
+                             const part = sceneRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+                             if (part) {
+                                 const base64Img = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                                 setCurrentScene(prev => prev ? { ...prev, imageUrl: base64Img } : undefined);
+                             }
+                        }).catch(e => console.error("Scene Gen Error", e));
+                        
+                    } catch (e) {
+                        console.error("Scene Gen Init Error", e);
+                    }
+                }
+
+                // Visual Update (Avatar)
                 if (gameResponse.update_avatar?.trigger && gameResponse.update_avatar.visual_prompt) {
                      const avatarPrompt = "Fantasy RPG Portrait, " + gameResponse.update_avatar.visual_prompt;
                      try {
@@ -876,8 +1001,8 @@ const App = () => {
                      } catch(e) { console.error("Avatar Gen Error", e); }
                 }
 
-                // Scene Visual Hook (Heuristic: triggers on new location or specific keywords)
-                if (narrative.length > 50 && Math.random() > 0.7) {
+                // Snapshot Image Hook (Narrative attachment) - kept for action shots if no scene update
+                if (!gameResponse.update_scene?.trigger && narrative.length > 50 && Math.random() > 0.7) {
                      const scenePrompt = "Dark fantasy rpg landscape, " + narrative.substring(0, 100);
                      try {
                         const imgRes = await ai.models.generateContent({
@@ -1145,7 +1270,11 @@ const App = () => {
                          </label>
                          <input type="range" min="0" max="1" step="0.1" value={volume} onChange={(e) => setVolume(parseFloat(e.target.value))} className="w-full h-1 bg-stone-700 rounded-lg appearance-none cursor-pointer accent-yellow-700" />
                      </div>
-                     <div className="pt-4 border-t border-[#3e352f] mt-auto">
+                     <div className="pt-4 border-t border-[#3e352f] mt-auto space-y-4">
+                        <div className="flex justify-between items-center">
+                           <span className="text-[10px] uppercase font-bold text-stone-600">Ambiente</span>
+                           <AudioController isPlaying={isMusicPlaying} setIsPlaying={setIsMusicPlaying} volume={volume} />
+                        </div>
                         <button onClick={handleResetGame} className="w-full text-xs text-stone-600 hover:text-red-500 transition-colors flex items-center justify-center gap-2 uppercase tracking-widest py-2 hover:bg-red-950/10 rounded">
                             Reiniciar Aventura
                         </button>
@@ -1159,6 +1288,9 @@ const App = () => {
                 {status.combat && <CombatTracker combatState={status.combat} />}
 
                 <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
+                    {/* Scene Display (Imersive Background Banner) */}
+                    {currentScene && <SceneDisplay sceneData={currentScene} />}
+
                     {messages.map((msg, idx) => (
                         <MessageItem 
                             key={msg.id} 
